@@ -75,6 +75,7 @@ jobs:
 
       - name: Build gomobile AAR
         run: |
+          mkdir -p flutter_app/android/app/libs
           gomobile bind \
             -target=android/arm64 \
             -androidapi=21 \
