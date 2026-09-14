@@ -234,4 +234,19 @@ class JavDBClient {
       throw Exception(error['error'] ?? 'AV download failed');
     }
   }
+
+  Future<Map<String, dynamic>> uploadLog(String logData) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/upload-log'),
+      headers: {'Content-Type': 'application/json'},
+      body: logData,
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Upload log failed');
+    }
+  }
 }

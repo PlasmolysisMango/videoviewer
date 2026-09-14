@@ -2,7 +2,12 @@ package goserver
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -322,5 +327,52 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"time":    time.Now().Format(time.RFC3339),
 		"version": "1.0.0",
+	})
+}
+
+// handleLogUpload accepts log data from Flutter clients and stores it
+func (s *Server) handleLogUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	if len(body) == 0 {
+		writeError(w, http.StatusBadRequest, "empty body")
+		return
+	}
+
+	// Create log directory if not exists
+	logDir := filepath.Join(s.cfg.DownloadDir, "logs")
+	if s.cfg.DownloadDir == "" {
+		logDir = filepath.Join(os.TempDir(), "videoviewer-logs")
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create log dir")
+		return
+	}
+
+	// Generate filename with timestamp
+	timestamp := time.Now().Format("20060102_150405")
+	filename := filepath.Join(logDir, fmt.Sprintf("client_%s.json", timestamp))
+
+	// Write log to file
+	if err := os.WriteFile(filename, body, 0o644); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to write log")
+		return
+	}
+
+	log.Printf("Log uploaded: %s (%d bytes)", filename, len(body))
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "ok",
+		"file":   filename,
 	})
 }

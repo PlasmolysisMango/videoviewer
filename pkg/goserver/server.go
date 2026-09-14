@@ -110,6 +110,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/av/resolve/", s.handleAVResolve)
 	mux.HandleFunc("GET /api/av/play/", s.handleAVPlay)
 	mux.HandleFunc("POST /api/av/download/", s.handleAVDownload)
+	// Log upload endpoint
+	mux.HandleFunc("POST /api/upload-log", s.handleLogUpload)
 
 	// Apply CORS middleware
 	handler := cors(mux)
