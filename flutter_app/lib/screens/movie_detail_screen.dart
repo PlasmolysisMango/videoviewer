@@ -7,8 +7,13 @@ import 'video_player_screen.dart';
 
 class MovieDetailScreen extends StatefulWidget {
   final String movieId;
+  final String movieNumber;
 
-  const MovieDetailScreen({super.key, required this.movieId});
+  const MovieDetailScreen({
+    super.key,
+    required this.movieId,
+    required this.movieNumber,
+  });
 
   @override
   State<MovieDetailScreen> createState() => _MovieDetailScreenState();
@@ -66,8 +71,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
 
   Future<void> _loadAvData() async {
     try {
-      AppLogger.info('Loading AV data for: ${widget.movieId}');
-      final result = await _client.avDetail(widget.movieId);
+      AppLogger.info('Loading AV data for: ${widget.movieNumber}');
+      final result = await _client.avDetail(widget.movieNumber);
       setState(() {
         _avData = result['video'] as Map<String, dynamic>?;
         _isLoadingAv = false;
@@ -83,7 +88,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
 
   Future<void> _loadStream() async {
     try {
-      final result = await _client.avPlay(widget.movieId);
+      final result = await _client.avPlay(widget.movieNumber);
       setState(() {
         _streamData = result['stream'] as Map<String, dynamic>?;
       });

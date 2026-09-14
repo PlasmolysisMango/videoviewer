@@ -154,7 +154,10 @@ class _SearchScreenState extends State<SearchScreen> {
                         context,
                         MaterialPageRoute(
                           builder: (context) =>
-                              MovieDetailScreen(movieId: movie.id),
+                              MovieDetailScreen(
+                                movieId: movie.id,
+                                movieNumber: movie.number,
+                              ),
                         ),
                       );
                     },

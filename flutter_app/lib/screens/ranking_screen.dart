@@ -180,7 +180,10 @@ class _RankingScreenState extends State<RankingScreen> {
                               context,
                               MaterialPageRoute(
                                 builder: (context) =>
-                                    MovieDetailScreen(movieId: movie.id),
+                                    MovieDetailScreen(
+                                      movieId: movie.id,
+                                      movieNumber: movie.number,
+                                    ),
                               ),
                             );
                           },
