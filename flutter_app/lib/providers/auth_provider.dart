@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../api/client.dart';
+import '../services/logger.dart';
 
 class AuthProvider with ChangeNotifier {
   final JavDBClient _client;
@@ -32,6 +33,7 @@ class AuthProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      AppLogger.info('Logging in as: $username');
       final result = await _client.login(username, password);
       _username = result['username'] as String?;
 
@@ -42,11 +44,13 @@ class AuthProvider with ChangeNotifier {
 
       _isLoading = false;
       notifyListeners();
+      AppLogger.info('Login successful');
       return true;
     } catch (e) {
       _error = e.toString();
       _isLoading = false;
       notifyListeners();
+      AppLogger.error('Login failed', e);
       return false;
     }
   }

@@ -6,6 +6,7 @@ import 'providers/auth_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/backend_launcher.dart';
+import 'services/logger.dart';
 
 String? _serverStartError;
 
@@ -14,10 +15,11 @@ void main() async {
 
   // Launch the Go backend server
   try {
+    AppLogger.info('Starting backend server...');
     await BackendLauncher.launch();
-    debugPrint('Backend server started successfully');
+    AppLogger.info('Backend server started successfully');
   } catch (e) {
-    debugPrint('Failed to start backend server: $e');
+    AppLogger.error('Failed to start backend server', e);
     _serverStartError = e.toString();
   }
 

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../api/client.dart';
 import '../api/models.dart';
+import '../services/backend_launcher.dart';
+import '../services/logger.dart';
 import 'movie_detail_screen.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -12,10 +14,16 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final _searchController = TextEditingController();
-  final _client = JavDBClient('http://localhost:9090');
+  late final JavDBClient _client;
   List<Movie> _movies = [];
   bool _isLoading = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _client = JavDBClient(BackendLauncher.baseUrl);
+  }
 
   @override
   void dispose() {
@@ -33,6 +41,7 @@ class _SearchScreenState extends State<SearchScreen> {
     });
 
     try {
+      AppLogger.info('Searching: $query');
       final result = await _client.search(query, limit: 20);
       final moviesList = (result['movies'] as List)
           .map((m) => Movie.fromJson(m as Map<String, dynamic>))
@@ -41,11 +50,13 @@ class _SearchScreenState extends State<SearchScreen> {
         _movies = moviesList;
         _isLoading = false;
       });
+      AppLogger.info('Search returned ${moviesList.length} results');
     } catch (e) {
       setState(() {
         _error = e.toString();
         _isLoading = false;
       });
+      AppLogger.error('Search failed', e);
     }
   }
 

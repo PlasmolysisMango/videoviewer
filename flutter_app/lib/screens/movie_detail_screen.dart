@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../api/client.dart';
 import '../api/models.dart';
+import '../services/backend_launcher.dart';
+import '../services/logger.dart';
 
 class MovieDetailScreen extends StatefulWidget {
   final String movieId;
@@ -12,7 +14,7 @@ class MovieDetailScreen extends StatefulWidget {
 }
 
 class _MovieDetailScreenState extends State<MovieDetailScreen> {
-  final _client = JavDBClient('http://localhost:9090');
+  late final JavDBClient _client;
   Map<String, dynamic>? _movieData;
   List<Magnet> _magnets = [];
   bool _isLoading = true;
@@ -21,11 +23,13 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _client = JavDBClient(BackendLauncher.baseUrl);
     _loadMovie();
   }
 
   Future<void> _loadMovie() async {
     try {
+      AppLogger.info('Loading movie: ${widget.movieId}');
       final result = await _client.getMovie(widget.movieId);
       final magnetsList = <Magnet>[];
       if (result['magnets'] != null) {
@@ -37,11 +41,13 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         _magnets = magnetsList;
         _isLoading = false;
       });
+      AppLogger.info('Movie loaded: ${_movieData?['number']}');
     } catch (e) {
       setState(() {
         _error = e.toString();
         _isLoading = false;
       });
+      AppLogger.error('Failed to load movie', e);
     }
   }
 

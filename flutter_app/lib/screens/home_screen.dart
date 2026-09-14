@@ -1,10 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../services/backend_launcher.dart';
+import '../services/logger.dart';
 import 'search_screen.dart';
+import 'ranking_screen.dart';
+import 'log_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
+
+  void _checkBackendAndNavigate(BuildContext context, Widget screen) {
+    if (!BackendLauncher.isInitialized) {
+      AppLogger.error('Backend not initialized, cannot navigate');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('后端服务未启动，部分功能不可用'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    Navigator.push(context, MaterialPageRoute(builder: (context) => screen));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,6 +32,15 @@ class HomeScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('JavDB'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bug_report),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const LogScreen()),
+              );
+            },
+          ),
           if (auth.isLoggedIn)
             IconButton(
               icon: const Icon(Icons.logout),
@@ -61,12 +88,7 @@ class HomeScreen extends StatelessWidget {
             const SizedBox(height: 48),
             ElevatedButton.icon(
               onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const SearchScreen(),
-                  ),
-                );
+                _checkBackendAndNavigate(context, const SearchScreen());
               },
               icon: const Icon(Icons.search),
               label: const Text('搜索'),
@@ -78,10 +100,7 @@ class HomeScreen extends StatelessWidget {
             const SizedBox(height: 16),
             ElevatedButton.icon(
               onPressed: () {
-                // TODO: Navigate to ranking screen
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('榜单功能待实现')),
-                );
+                _checkBackendAndNavigate(context, const RankingScreen());
               },
               icon: const Icon(Icons.trending_up),
               label: const Text('榜单'),
