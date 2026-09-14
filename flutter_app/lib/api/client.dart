@@ -133,4 +133,105 @@ class JavDBClient {
       throw Exception(error['error'] ?? 'Get actor failed');
     }
   }
+
+  // AV endpoints (MissAV/Jable/HohoJ)
+
+  Future<Map<String, dynamic>> avSearch(String query,
+      {int page = 1, int limit = 20, String? source}) async {
+    final params = <String, String>{
+      'q': query,
+      'page': page.toString(),
+      'limit': limit.toString(),
+    };
+    if (source != null && source.isNotEmpty) {
+      params['source'] = source;
+    }
+
+    final uri = Uri.parse('$baseUrl/api/av/search')
+        .replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'AV search failed');
+    }
+  }
+
+  Future<Map<String, dynamic>> avDetail(String code, {String? source}) async {
+    final params = <String, String>{};
+    if (source != null && source.isNotEmpty) {
+      params['source'] = source;
+    }
+
+    final uri = Uri.parse('$baseUrl/api/av/detail/$code')
+        .replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'AV detail failed');
+    }
+  }
+
+  Future<Map<String, dynamic>> avResolve(String code, {String? source}) async {
+    final params = <String, String>{};
+    if (source != null && source.isNotEmpty) {
+      params['source'] = source;
+    }
+
+    final uri = Uri.parse('$baseUrl/api/av/resolve/$code')
+        .replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'AV resolve failed');
+    }
+  }
+
+  Future<Map<String, dynamic>> avPlay(String code, {String? source}) async {
+    final params = <String, String>{};
+    if (source != null && source.isNotEmpty) {
+      params['source'] = source;
+    }
+
+    final uri = Uri.parse('$baseUrl/api/av/play/$code')
+        .replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'AV play failed');
+    }
+  }
+
+  Future<Map<String, dynamic>> avDownload(String code,
+      {String? source, String? downloadDir}) async {
+    final params = <String, String>{};
+    if (source != null && source.isNotEmpty) {
+      params['source'] = source;
+    }
+    if (downloadDir != null && downloadDir.isNotEmpty) {
+      params['download_dir'] = downloadDir;
+    }
+
+    final uri = Uri.parse('$baseUrl/api/av/download/$code')
+        .replace(queryParameters: params);
+    final response = await http.post(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'AV download failed');
+    }
+  }
 }

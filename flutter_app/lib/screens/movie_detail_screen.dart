@@ -3,6 +3,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
+import 'video_player_screen.dart';
 
 class MovieDetailScreen extends StatefulWidget {
   final String movieId;
@@ -17,7 +18,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   late final JavDBClient _client;
   Map<String, dynamic>? _movieData;
   List<Magnet> _magnets = [];
+  Map<String, dynamic>? _avData;
   bool _isLoading = true;
+  bool _isLoadingAv = false;
   String? _error;
 
   @override
@@ -25,6 +28,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     super.initState();
     _client = JavDBClient(BackendLauncher.baseUrl);
     _loadMovie();
+    _loadAvData();
   }
 
   Future<void> _loadMovie() async {
@@ -57,6 +61,50 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       });
       AppLogger.error('Failed to load movie', e);
     }
+  }
+
+  Future<void> _loadAvData() async {
+    try {
+      AppLogger.info('Loading AV data for: ${widget.movieId}');
+      final result = await _client.avDetail(widget.movieId);
+      setState(() {
+        _avData = result['video'] as Map<String, dynamic>?;
+        _isLoadingAv = false;
+      });
+      AppLogger.info('AV data loaded');
+    } catch (e) {
+      AppLogger.warning('AV data not available: $e');
+    }
+  }
+
+  void _playVideo() {
+    if (_avData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('视频源不可用')),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VideoPlayerScreen(
+          videoUrl: _avData!['play_url'] as String? ?? '',
+          title: _movieData?['title'] as String? ?? 'Video',
+        ),
+      ),
+    );
+  }
+
+  void _downloadVideo() {
+    if (_avData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('下载源不可用')),
+      );
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('下载功能开发中...')),
+    );
   }
 
   @override
@@ -112,6 +160,35 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           _buildInfoRow(
               '评分', movie['score'] != null ? '${movie['score']}' : null),
           const SizedBox(height: 24),
+          // Play/Download buttons
+          if (_avData != null) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _playVideo,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('播放'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _downloadVideo,
+                    icon: const Icon(Icons.download),
+                    label: const Text('下载'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+          ],
           // Magnets
           const Text(
             '磁链',
