@@ -14,7 +14,7 @@ env:
 jobs:
   # Build Go HTTP Server for Windows
   build-server-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -90,7 +90,7 @@ jobs:
 
   # Build Flutter app for Windows
   build-flutter-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
