@@ -71,14 +71,15 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         _avData = result['video'] as Map<String, dynamic>?;
         _isLoadingAv = false;
       });
-      AppLogger.info('AV data loaded');
+      AppLogger.info('AV data loaded, m3u8: ${_avData?['m3u8']}');
     } catch (e) {
       AppLogger.warning('AV data not available: $e');
     }
   }
 
   void _playVideo() {
-    if (_avData == null) {
+    final m3u8Url = _avData?['m3u8'] as String?;
+    if (m3u8Url == null || m3u8Url.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('视频源不可用')),
       );
@@ -88,7 +89,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => VideoPlayerScreen(
-          videoUrl: _avData!['play_url'] as String? ?? '',
+          videoUrl: m3u8Url,
           title: _movieData?['title'] as String? ?? 'Video',
         ),
       ),

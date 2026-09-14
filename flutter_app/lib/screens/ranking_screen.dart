@@ -18,8 +18,8 @@ class _RankingScreenState extends State<RankingScreen> {
   List<Movie> _movies = [];
   bool _isLoading = true;
   String? _error;
-  String _selectedKind = 'uncensored';
-  final List<String> _kinds = ['uncensored', 'censored', 'western'];
+  String _selectedKind = 'playback';
+  final List<String> _kinds = ['playback', 'movies', 'top250', 'actors'];
 
   @override
   void initState() {
@@ -76,7 +76,7 @@ class _RankingScreenState extends State<RankingScreen> {
                     else
                       const SizedBox(width: 18),
                     const SizedBox(width: 8),
-                    Text(kind == 'uncensored' ? '无码' : kind == 'censored' ? '有码' : '欧美'),
+                    Text(kind == 'playback' ? '热播榜' : kind == 'movies' ? '分类榜' : kind == 'top250' ? 'TOP250' : '演员榜'),
                   ],
                 ),
               );
