@@ -14,3 +14,4 @@ javdb.token
 /javdbcli
 /javdbdump
 /apiprobe
+/tools/log-receiver/log-receiver

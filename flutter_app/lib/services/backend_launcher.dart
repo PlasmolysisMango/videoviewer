@@ -16,7 +16,7 @@ class BackendLauncher {
   static const String _baseUrl = 'http://127.0.0.1:18888';
   // Log receiver URL - change this to your development machine's IP
   // Format: http://<dev-machine-ip>:9091
-  static const String logUploadUrl = 'http://192.168.1.100:9091';
+  static const String logUploadUrl = 'http://47.99.132.211:9091';
   static const MethodChannel _channel =
       MethodChannel('com.videoviewer/goserver');
 
