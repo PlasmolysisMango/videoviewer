@@ -91,10 +91,6 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
 
-      - name: Add Windows platform support
-        working-directory: ./flutter_app
-        run: flutter create --platforms=windows .
-
       - name: Get Flutter dependencies
         working-directory: ./flutter_app
         run: flutter pub get
