@@ -5,6 +5,11 @@ account.txt
 javdb.token
 .env
 
+# Android signing keys (use GitHub Secrets instead)
+*.jks
+*.keystore
+**/key.properties
+
 # Build output
 /javdbcli
 /javdbdump
