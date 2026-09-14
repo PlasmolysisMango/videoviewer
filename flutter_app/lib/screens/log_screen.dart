@@ -25,7 +25,7 @@ class _LogScreenState extends State<LogScreen> {
     setState(() => _isUploading = true);
 
     try {
-      final client = JavDBClient(BackendLauncher.baseUrl);
+      final client = JavDBClient(BackendLauncher.logUploadUrl);
       
       // Convert logs to JSON
       final logData = jsonEncode({

@@ -1,0 +1,14 @@
+[Unit]
+Description=VideoViewer Log Receiver
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/workspace/project/videoviewer/tools/log-receiver
+ExecStart=/root/workspace/project/videoviewer/tools/log-receiver/log-receiver
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
