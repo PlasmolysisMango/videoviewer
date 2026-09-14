@@ -215,11 +215,12 @@ jobs:
 
       - name: Create release archives
         run: |
-          # Windows release (Flutter app + standalone server)
+          # Windows release (Flutter app + server + start script)
           mkdir -p release/windows
           cp javdbserver-windows/javdbserver.exe release/windows/
           cp -r flutter-app-windows/* release/windows/
-          cd release/windows && zip -r ../../javdb-windows-x64.zip . && cd ../..
+          cp scripts/start.bat release/windows/
+          cd release/windows && zip -r ../../videoviewer-windows-x64.zip . && cd ../..
 
           # Android release (Flutter app with embedded Go server)
           mkdir -p release/android
