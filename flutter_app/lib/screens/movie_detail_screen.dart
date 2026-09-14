@@ -19,6 +19,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   Map<String, dynamic>? _movieData;
   List<Magnet> _magnets = [];
   Map<String, dynamic>? _avData;
+  Map<String, dynamic>? _streamData;
   bool _isLoading = true;
   bool _isLoadingAv = false;
   String? _error;
@@ -72,25 +73,48 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         _isLoadingAv = false;
       });
       AppLogger.info('AV data loaded, m3u8: ${_avData?['m3u8']}');
+      
+      // Also try to get stream with referer
+      _loadStream();
     } catch (e) {
       AppLogger.warning('AV data not available: $e');
     }
   }
 
+  Future<void> _loadStream() async {
+    try {
+      final result = await _client.avPlay(widget.movieId);
+      setState(() {
+        _streamData = result['stream'] as Map<String, dynamic>?;
+      });
+      AppLogger.info('Stream loaded: ${_streamData?['url']}, referer: ${_streamData?['referer']}');
+    } catch (e) {
+      AppLogger.warning('Stream not available: $e');
+    }
+  }
+
   void _playVideo() {
+    // Prefer stream data (has referer), fallback to avData m3u8
+    final streamUrl = _streamData?['url'] as String?;
+    final streamReferer = _streamData?['referer'] as String?;
     final m3u8Url = _avData?['m3u8'] as String?;
-    if (m3u8Url == null || m3u8Url.isEmpty) {
+    
+    final videoUrl = streamUrl ?? m3u8Url;
+    if (videoUrl == null || videoUrl.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('视频源不可用')),
       );
       return;
     }
+    
+    AppLogger.info('Playing: $videoUrl, referer: $streamReferer');
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => VideoPlayerScreen(
-          videoUrl: m3u8Url,
+          videoUrl: videoUrl,
           title: _movieData?['title'] as String? ?? 'Video',
+          referer: streamReferer,
         ),
       ),
     );

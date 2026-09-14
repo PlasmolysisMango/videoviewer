@@ -5,11 +5,13 @@ import '../services/logger.dart';
 class VideoPlayerScreen extends StatefulWidget {
   final String videoUrl;
   final String title;
+  final String? referer;
 
   const VideoPlayerScreen({
     super.key,
     required this.videoUrl,
     required this.title,
+    this.referer,
   });
 
   @override
@@ -30,8 +32,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   Future<void> _initVideo() async {
     try {
       AppLogger.info('Initializing video: ${widget.videoUrl}');
+      
+      final httpHeaders = <String, String>{};
+      if (widget.referer != null && widget.referer!.isNotEmpty) {
+        httpHeaders['Referer'] = widget.referer!;
+        AppLogger.info('Using Referer: ${widget.referer}');
+      }
+      
       _controller = VideoPlayerController.networkUrl(
         Uri.parse(widget.videoUrl),
+        httpHeaders: httpHeaders.isNotEmpty ? httpHeaders : null,
       );
       await _controller.initialize();
       await _controller.play();
