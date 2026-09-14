@@ -32,16 +32,24 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       AppLogger.info('Loading movie: ${widget.movieId}');
       final result = await _client.getMovie(widget.movieId);
       final magnetsList = <Magnet>[];
-      if (result['magnets'] != null) {
-        magnetsList.addAll((result['magnets'] as List)
-            .map((m) => Magnet.fromJson(m as Map<String, dynamic>)));
+      
+      // Handle both single magnet (Map) and list of magnets
+      final magnetsData = result['magnets'];
+      if (magnetsData != null) {
+        if (magnetsData is List) {
+          magnetsList.addAll(magnetsData
+              .map((m) => Magnet.fromJson(m as Map<String, dynamic>)));
+        } else if (magnetsData is Map) {
+          magnetsList.add(Magnet.fromJson(magnetsData as Map<String, dynamic>));
+        }
       }
+      
       setState(() {
         _movieData = result['movie'] as Map<String, dynamic>?;
         _magnets = magnetsList;
         _isLoading = false;
       });
-      AppLogger.info('Movie loaded: ${_movieData?['number']}');
+      AppLogger.info('Movie loaded: ${_movieData?['number']}, magnets: ${_magnets.length}');
     } catch (e) {
       setState(() {
         _error = e.toString();
