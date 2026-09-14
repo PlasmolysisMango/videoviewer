@@ -1,0 +1,11 @@
+# Local secrets: the CLI reads credentials from the environment, never from the
+# repository. Keep anything that looks like a session out of git.
+account.txt
+*.token
+javdb.token
+.env
+
+# Build output
+/javdbcli
+/javdbdump
+/apiprobe
