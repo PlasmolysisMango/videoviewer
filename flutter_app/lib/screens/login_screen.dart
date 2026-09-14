@@ -33,7 +33,18 @@ class _LoginScreenState extends State<LoginScreen> {
     );
 
     if (success && mounted) {
-      Navigator.of(context).pushReplacementNamed('/home');
+      Navigator.of(context).pop(); // Return to home
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('登录成功')),
+      );
+    } else if (mounted) {
+      // Show error but don't navigate away
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(auth.error ?? '登录失败'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -42,6 +53,13 @@ class _LoginScreenState extends State<LoginScreen> {
     final auth = context.watch<AuthProvider>();
 
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('登录'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
@@ -97,15 +115,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   },
                 ),
                 const SizedBox(height: 24),
-                if (auth.error != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: Text(
-                      auth.error!,
-                      style: const TextStyle(color: Colors.red),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
                 ElevatedButton(
                   onPressed: auth.isLoading ? null : _login,
                   style: ElevatedButton.styleFrom(

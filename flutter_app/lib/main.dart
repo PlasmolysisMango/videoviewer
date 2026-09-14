@@ -7,6 +7,8 @@ import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/backend_launcher.dart';
 
+String? _serverStartError;
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -16,7 +18,7 @@ void main() async {
     debugPrint('Backend server started successfully');
   } catch (e) {
     debugPrint('Failed to start backend server: $e');
-    // Continue anyway - user will see connection errors
+    _serverStartError = e.toString();
   }
 
   // Create API client using the backend URL
@@ -41,10 +43,37 @@ class MyApp extends StatelessWidget {
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
           useMaterial3: true,
         ),
-        initialRoute: '/login',
+        initialRoute: '/home',
         routes: {
           '/login': (context) => const LoginScreen(),
           '/home': (context) => const HomeScreen(),
+        },
+        builder: (context, child) {
+          // Show server start error dialog if needed
+          if (_serverStartError != null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (context.mounted) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (dialogContext) => AlertDialog(
+                    title: const Text('后端服务启动失败'),
+                    content: SelectableText(
+                      _serverStartError!,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        child: const Text('继续 (部分功能不可用)'),
+                      ),
+                    ],
+                  ),
+                );
+              }
+            });
+          }
+          return child ?? const SizedBox.shrink();
         },
       ),
     );

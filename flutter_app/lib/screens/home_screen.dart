@@ -14,15 +14,26 @@ class HomeScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('JavDB'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await auth.logout();
-              if (context.mounted) {
-                Navigator.of(context).pushReplacementNamed('/login');
-              }
-            },
-          ),
+          if (auth.isLoggedIn)
+            IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: () async {
+                await auth.logout();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('已退出登录')),
+                  );
+                }
+              },
+            )
+          else
+            TextButton.icon(
+              onPressed: () {
+                Navigator.of(context).pushNamed('/login');
+              },
+              icon: const Icon(Icons.login, size: 18),
+              label: const Text('登录'),
+            ),
         ],
       ),
       body: Center(
@@ -36,9 +47,17 @@ class HomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              '欢迎, ${auth.username ?? "用户"}',
+              auth.isLoggedIn ? '欢迎, ${auth.username ?? "用户"}' : '游客模式',
               style: const TextStyle(fontSize: 24),
             ),
+            if (!auth.isLoggedIn)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  '登录后可使用完整功能',
+                  style: TextStyle(fontSize: 14, color: Colors.grey),
+                ),
+              ),
             const SizedBox(height: 48),
             ElevatedButton.icon(
               onPressed: () {
