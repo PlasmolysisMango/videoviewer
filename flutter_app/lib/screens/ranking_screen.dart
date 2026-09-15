@@ -1,30 +1,44 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+
 import '../api/client.dart';
 import '../api/models.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
-import 'movie_detail_screen.dart';
+import '../widgets/common_ui.dart';
 
+/// 榜单页：顶部胶囊切换榜单类型，下方卡片化条目列表（影片/演员）。
 class RankingScreen extends StatefulWidget {
-  const RankingScreen({super.key});
+  /// 初始展示的榜单类型（playback/movies/top250/actors），首页入口使用。
+  final String? initialKind;
+
+  const RankingScreen({super.key, this.initialKind});
 
   @override
   State<RankingScreen> createState() => _RankingScreenState();
 }
 
 class _RankingScreenState extends State<RankingScreen> {
+  static const _kindLabels = {
+    'playback': '热播榜',
+    'movies': '影片榜',
+    'top250': 'TOP250',
+    'actors': '演员榜',
+  };
+
   late final JavDBClient _client;
   List<Movie> _movies = [];
+  List<Actor> _actors = [];
+  /// 影片榜的展示模式（大图网格/小图列表）；演员榜不参与切换。
+  MovieViewMode _viewMode = MovieViewMode.list;
   bool _isLoading = true;
   String? _error;
-  String _selectedKind = 'playback';
-  final List<String> _kinds = ['playback', 'movies', 'top250', 'actors'];
+  late String _selectedKind;
 
   @override
   void initState() {
     super.initState();
     _client = JavDBClient(BackendLauncher.baseUrl);
+    _selectedKind = widget.initialKind ?? 'playback';
     _loadRanking();
   }
 
@@ -37,14 +51,22 @@ class _RankingScreenState extends State<RankingScreen> {
     try {
       AppLogger.info('Loading ranking: $_selectedKind');
       final result = await _client.getRanking(_selectedKind);
-      final moviesList = (result['movies'] as List)
-          .map((m) => Movie.fromJson(m as Map<String, dynamic>))
-          .toList();
+      // 后端 movies/actors 互斥返回（演员榜只有 actors），需 null 安全解析
+      final moviesList = (result['movies'] as List?)
+              ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
+              .toList() ??
+          const <Movie>[];
+      final actorsList = (result['actors'] as List?)
+              ?.map((a) => Actor.fromJson(a as Map<String, dynamic>))
+              .toList() ??
+          const <Actor>[];
       setState(() {
         _movies = moviesList;
+        _actors = actorsList;
         _isLoading = false;
       });
-      AppLogger.info('Loaded ${moviesList.length} ranking items');
+      AppLogger.info(
+          'Loaded ${moviesList.length} movies, ${actorsList.length} actors');
     } catch (e) {
       setState(() {
         _error = e.toString();
@@ -54,142 +76,128 @@ class _RankingScreenState extends State<RankingScreen> {
     }
   }
 
+  void _switchKind(String kind) {
+    if (kind == _selectedKind) return;
+    setState(() => _selectedKind = kind);
+    _loadRanking();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('榜单'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.emoji_events,
+                color: Theme.of(context).colorScheme.primary),
+            const SizedBox(width: 8),
+            const Text('榜单'),
+          ],
+        ),
         actions: [
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.filter_list),
-            onSelected: (kind) {
-              setState(() => _selectedKind = kind);
-              _loadRanking();
-            },
-            itemBuilder: (context) => _kinds.map((kind) {
-              return PopupMenuItem(
-                value: kind,
-                child: Row(
-                  children: [
-                    if (kind == _selectedKind)
-                      const Icon(Icons.check, size: 18)
-                    else
-                      const SizedBox(width: 18),
-                    const SizedBox(width: 8),
-                    Text(kind == 'playback' ? '热播榜' : kind == 'movies' ? '分类榜' : kind == 'top250' ? 'TOP250' : '演员榜'),
-                  ],
-                ),
-              );
-            }).toList(),
-          ),
+          if (_selectedKind != 'actors')
+            ViewModeToggle(
+              mode: _viewMode,
+              onChanged: (m) => setState(() => _viewMode = m),
+            ),
           IconButton(
             icon: const Icon(Icons.refresh),
+            tooltip: '刷新',
             onPressed: _isLoading ? null : _loadRanking,
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                      const SizedBox(height: 16),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 32),
-                        child: Text(
-                          '错误: $_error',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.red),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _loadRanking,
-                        child: const Text('重试'),
-                      ),
-                    ],
+      body: Column(
+        children: [
+          // 榜单类型切换（横向滚动胶囊）
+          SizedBox(
+            height: 52,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              children: _kindLabels.entries.map((e) {
+                final selected = e.key == _selectedKind;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(e.value),
+                    selected: selected,
+                    onSelected: (_) => _switchKind(e.key),
                   ),
-                )
-              : _movies.isEmpty
-                  ? const Center(child: Text('暂无数据'))
-                  : ListView.builder(
-                      itemCount: _movies.length,
-                      itemBuilder: (context, index) {
-                        final movie = _movies[index];
-                        return ListTile(
-                          leading: movie.thumbUrl != null
-                              ? Image.network(
-                                  movie.thumbUrl!,
-                                  width: 60,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) =>
-                                      const Icon(Icons.movie, size: 60),
-                                )
-                              : const Icon(Icons.movie, size: 60),
-                          title: Text(
-                            movie.number,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: Text(
-                            movie.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (movie.ranking != null)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: movie.ranking! <= 3
-                                        ? Colors.orange
-                                        : Colors.grey[300],
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Text(
-                                    '#${movie.ranking}',
-                                    style: TextStyle(
-                                      color: movie.ranking! <= 3
-                                          ? Colors.white
-                                          : Colors.black,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
-                              if (movie.score != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 8),
-                                  child: Text(
-                                    '${movie.score}',
-                                    style: const TextStyle(
-                                      color: Colors.orange,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    MovieDetailScreen(
-                                      movieId: movie.id,
-                                      movieNumber: movie.number,
-                                    ),
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    ),
+                );
+              }).toList(),
+            ),
+          ),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                    ? ErrorRetryView(error: _error!, onRetry: _loadRanking)
+                    : RefreshIndicator(
+                        onRefresh: _loadRanking,
+                        child: _selectedKind == 'actors'
+                            ? _buildActorList(context)
+                            : _buildMovieList(context),
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMovieList(BuildContext context) {
+    if (_movies.isEmpty) {
+      return _emptyView(context);
+    }
+    // 大图模式：海报网格；小图模式：带排名徽章的列表
+    if (_viewMode == MovieViewMode.grid) {
+      return GridView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 170,
+          mainAxisSpacing: 14,
+          crossAxisSpacing: 12,
+          childAspectRatio: 0.58,
+        ),
+        itemCount: _movies.length,
+        itemBuilder: (context, index) => MovieGridCard(movie: _movies[index]),
+      );
+    }
+    return ListView.separated(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      itemCount: _movies.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (context, index) => RankingMovieTile(movie: _movies[index]),
+    );
+  }
+
+  Widget _buildActorList(BuildContext context) {
+    if (_actors.isEmpty) {
+      return _emptyView(context);
+    }
+    return ListView.separated(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      itemCount: _actors.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (context, index) => RankingActorTile(actor: _actors[index]),
+    );
+  }
+
+  Widget _emptyView(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.inbox_outlined,
+              size: 56, color: Theme.of(context).hintColor),
+          const SizedBox(height: 12),
+          Text('暂无数据', style: TextStyle(color: Theme.of(context).hintColor)),
+        ],
+      ),
     );
   }
 }

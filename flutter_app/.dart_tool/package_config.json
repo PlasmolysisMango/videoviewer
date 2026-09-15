@@ -248,6 +248,30 @@
       "languageVersion": "3.0"
     },
     {
+      "name": "pointer_interceptor",
+      "rootUri": "file:///root/.pub-cache/hosted/pub.dev/pointer_interceptor-0.10.1+2",
+      "packageUri": "lib/",
+      "languageVersion": "3.2"
+    },
+    {
+      "name": "pointer_interceptor_ios",
+      "rootUri": "file:///root/.pub-cache/hosted/pub.dev/pointer_interceptor_ios-0.10.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.2"
+    },
+    {
+      "name": "pointer_interceptor_platform_interface",
+      "rootUri": "file:///root/.pub-cache/hosted/pub.dev/pointer_interceptor_platform_interface-0.10.0+1",
+      "packageUri": "lib/",
+      "languageVersion": "3.1"
+    },
+    {
+      "name": "pointer_interceptor_web",
+      "rootUri": "file:///root/.pub-cache/hosted/pub.dev/pointer_interceptor_web-0.10.3",
+      "packageUri": "lib/",
+      "languageVersion": "3.6"
+    },
+    {
       "name": "provider",
       "rootUri": "file:///root/.pub-cache/hosted/pub.dev/provider-6.1.5+1",
       "packageUri": "lib/",

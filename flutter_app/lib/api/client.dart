@@ -35,12 +35,16 @@ class JavDBClient {
     }
   }
 
+  /// 影片/演员搜索：scope 传 'movie'（默认）或 'actor'。
   Future<Map<String, dynamic>> search(String query,
-      {int page = 1, int limit = 20}) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/search?q=$query&page=$page&limit=$limit'),
-      headers: _headers,
-    );
+      {int page = 1, int limit = 20, String scope = 'movie'}) async {
+    final uri = Uri.parse('$baseUrl/api/search').replace(queryParameters: {
+      'q': query,
+      'page': page.toString(),
+      'limit': limit.toString(),
+      'scope': scope,
+    });
+    final response = await http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -131,6 +135,24 @@ class JavDBClient {
     } else {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'Get actor failed');
+    }
+  }
+
+  /// 演员的作品列表（演员专题页），支持分页。
+  Future<Map<String, dynamic>> actorMovies(String actorId,
+      {int page = 1, int limit = 20}) async {
+    final uri = Uri.parse('$baseUrl/api/actor-movies/$actorId')
+        .replace(queryParameters: {
+      'page': page.toString(),
+      'limit': limit.toString(),
+    });
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Get actor movies failed');
     }
   }
 
@@ -232,21 +254,6 @@ class JavDBClient {
     } else {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'AV download failed');
-    }
-  }
-
-  Future<Map<String, dynamic>> uploadLog(String logData) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/api/upload-log'),
-      headers: {'Content-Type': 'application/json'},
-      body: logData,
-    );
-
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body);
-    } else {
-      final error = jsonDecode(response.body);
-      throw Exception(error['error'] ?? 'Upload log failed');
     }
   }
 }

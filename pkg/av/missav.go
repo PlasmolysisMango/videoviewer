@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -20,6 +21,8 @@ var missavUUIDRe = regexp.MustCompile(`m3u8\|([a-f0-9|]+)\|com\|surrit\|https\|v
 type MissAVSource struct {
 	http   *HTTPClient
 	domain string // 如 "missav.ai"
+	// surritBase 是流媒体 CDN 基地址，测试可指向 stub。
+	surritBase string
 }
 
 // NewMissAVSource 构造 MissAV 源，domain 为空时使用默认站点。
@@ -27,7 +30,7 @@ func NewMissAVSource(hc *HTTPClient, domain string) *MissAVSource {
 	if domain == "" {
 		domain = "missav.ai"
 	}
-	return &MissAVSource{http: hc, domain: domain}
+	return &MissAVSource{http: hc, domain: domain, surritBase: "https://surrit.com"}
 }
 
 // Name 实现 Source。
@@ -52,12 +55,43 @@ func (s *MissAVSource) pageCandidates(code string) []string {
 	}
 }
 
+// variantPage 表示同一番号的一个片源变体页面。
+type variantPage struct {
+	url  string
+	kind string // "uncensored" / "cnsub" / "normal"
+}
+
+// variantCandidates 返回同一番号的全部片源变体页：
+// 无码流出版（-uncensored-leak）、中文字幕版（-chinese-subtitle）、普通版与镜像。
+func (s *MissAVSource) variantCandidates(code string) []variantPage {
+	c := strings.ToLower(code)
+	return []variantPage{
+		{url: fmt.Sprintf("%s/cn/%s-uncensored-leak", s.base(), c), kind: "uncensored"},
+		{url: fmt.Sprintf("%s/cn/%s-chinese-subtitle", s.base(), c), kind: "cnsub"},
+		{url: fmt.Sprintf("%s/cn/%s", s.base(), c), kind: "normal"},
+		{url: fmt.Sprintf("%s/dm13/cn/%s", s.base(), c), kind: "normal"},
+	}
+}
+
+// fetchPage 拉取单个详情页并校验页面有效性（og:title 或 uuid 存在）。
+func (s *MissAVSource) fetchPage(ctx context.Context, u string) (string, error) {
+	body, err := s.http.GetWithRetry(ctx, u, s.base()+"/", 2)
+	if err != nil {
+		return "", err
+	}
+	html := string(body)
+	if !missavUUIDRe.MatchString(html) && !ogTitleRe.MatchString(html) {
+		return "", fmt.Errorf("%w: %s", ErrNotFound, u)
+	}
+	return html, nil
+}
+
 // fetchDetailPage 依次尝试候选 URL，返回首个成功的 HTML。
 // 若全部失败但其中存在 Cloudflare 拦截（403），如实上抛该错误，以便上层区分"被质询"与"番号不存在"。
 func (s *MissAVSource) fetchDetailPage(ctx context.Context, code string) (string, string, error) {
 	var lastBlocked error
 	for _, u := range s.pageCandidates(code) {
-		body, err := s.http.GetWithRetry(ctx, u, s.base()+"/", 2)
+		html, err := s.fetchPage(ctx, u)
 		if err != nil {
 			var he *HTTPError
 			if errors.As(err, &he) && he.Status == http.StatusForbidden {
@@ -65,11 +99,7 @@ func (s *MissAVSource) fetchDetailPage(ctx context.Context, code string) (string
 			}
 			continue
 		}
-		html := string(body)
-		// 命中详情页标志（og:title 或 uuid）才认为是有效页面
-		if missavUUIDRe.MatchString(html) || ogTitleRe.MatchString(html) {
-			return html, u, nil
-		}
+		return html, u, nil
 	}
 	if lastBlocked != nil {
 		return "", "", lastBlocked
@@ -155,27 +185,74 @@ func (s *MissAVSource) Detail(ctx context.Context, code string) (*Video, error) 
 	return v, nil
 }
 
-// Resolve 实现 Source：提取 uuid → surrit playlist → 多码率流。
+// Resolve 实现 Source：解析番号的全部可用片源（并行遍历无码/中字/普通/镜像变体页），
+// 汇总每页的多清晰度流并打上变体标记（同一 uuid 的镜像页去重）。
 func (s *MissAVSource) Resolve(ctx context.Context, code string) ([]Stream, error) {
 	code = normalizeCode(code)
-	html, _, err := s.fetchDetailPage(ctx, code)
-	if err != nil {
-		return nil, err
+	candidates := s.variantCandidates(code)
+
+	var (
+		mu          sync.Mutex
+		wg          sync.WaitGroup
+		all         []Stream
+		seenUUID    = map[string]bool{}
+		fetchedAny  bool
+		lastBlocked error
+	)
+	for _, cand := range candidates {
+		wg.Add(1)
+		go func(cand variantPage) {
+			defer wg.Done()
+			html, err := s.fetchPage(ctx, cand.url)
+			if err != nil {
+				var he *HTTPError
+				if errors.As(err, &he) && he.Status == http.StatusForbidden {
+					mu.Lock()
+					lastBlocked = err
+					mu.Unlock()
+				}
+				return
+			}
+			uuid, ok := extractMissAVUUID(html)
+			if !ok {
+				return
+			}
+			playlist := fmt.Sprintf("%s/%s/playlist.m3u8", s.surritBase, uuid)
+			streams, err := FetchStreams(ctx, s.http, playlist, s.base()+"/")
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			fetchedAny = true
+			if seenUUID[uuid] {
+				return // 镜像页与普通页内容相同时去重
+			}
+			seenUUID[uuid] = true
+			// 变体标记：页面标签优先判定；标签缺失时回退按 URL 后缀判定。
+			tags := missavPageTags(html)
+			unc := cand.kind == "uncensored" || tagsMatchAny(tags, missavUncensoredTagHints)
+			cn := cand.kind == "cnsub" || tagsMatchAny(tags, missavCNSubTagHints)
+			for i := range streams {
+				streams[i].Source = s.Name()
+				streams[i].Uncensored = unc
+				streams[i].CNSub = cn
+			}
+			all = append(all, streams...)
+		}(cand)
 	}
-	uuid, ok := extractMissAVUUID(html)
-	if !ok {
+	wg.Wait()
+
+	if !fetchedAny {
+		if lastBlocked != nil {
+			return nil, lastBlocked
+		}
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, code)
+	}
+	if len(all) == 0 {
 		return nil, ErrNoStream
 	}
-	playlist := fmt.Sprintf("https://surrit.com/%s/playlist.m3u8", uuid)
-	referer := s.base()
-	streams, err := FetchStreams(ctx, s.http, playlist, referer)
-	if err != nil {
-		return nil, err
-	}
-	for i := range streams {
-		streams[i].Source = s.Name()
-	}
-	return streams, nil
+	return all, nil
 }
 
 // extractMissAVUUID 从 HTML 提取并还原 surrit uuid（段序反转，'|'→'-'）。
@@ -189,6 +266,34 @@ func extractMissAVUUID(html string) (string, bool) {
 		parts[i], parts[j] = parts[j], parts[i]
 	}
 	return strings.Join(parts, "-"), true
+}
+
+// 片源变体的页面标签判据：MissAV 详情页给无码内容打「无码流出」等标签、
+// 中字内容打「中文字幕」；比 URL 后缀更可靠（普通页也可能本就是中字/无码视频）。
+var (
+	missavUncensoredTagHints = []string{"无码", "無碼"}
+	missavCNSubTagHints      = []string{"中文字幕", "中字"}
+)
+
+// tagsMatchAny 报告 tags 中任一项包含 hints 中任一关键字（简繁通配）。
+func tagsMatchAny(tags, hints []string) bool {
+	for _, t := range tags {
+		for _, h := range hints {
+			if strings.Contains(t, h) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// missavPageTags 提取详情页标签文本集合（选择器与 Detail 一致）。
+func missavPageTags(html string) []string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil
+	}
+	return collectTexts(doc, "a[href*='tag'], a[href*='genre'], .tag")
 }
 
 // collectTexts 提取匹配选择器元素去重后的文本集合。

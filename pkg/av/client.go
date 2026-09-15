@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,6 +150,7 @@ func (c *Client) Detail(ctx context.Context, code string, source string) (*Video
 	for _, s := range c.ordered(source) {
 		v, err := s.Detail(ctx, code)
 		if err != nil {
+			log.Printf("[av] source=%s detail %s: %v", s.Name(), code, err)
 			lastErr = err
 			continue
 		}
@@ -170,6 +172,7 @@ func (c *Client) Resolve(ctx context.Context, code string, source string) ([]Str
 		streams, err := s.Resolve(ctx, code)
 		if err != nil || len(streams) == 0 {
 			if err != nil {
+				log.Printf("[av] source=%s resolve %s: %v", s.Name(), code, err)
 				lastErr = err
 			}
 			continue

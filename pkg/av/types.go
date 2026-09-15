@@ -63,6 +63,10 @@ type Stream struct {
 	Referer string `json:"referer"`
 	// Source 来源标识。
 	Source string `json:"source"`
+	// Uncensored 该流来自无码（uncensored-leak）变体页。
+	Uncensored bool `json:"uncensored,omitempty"`
+	// CNSub 该流来自中文字幕变体页。
+	CNSub bool `json:"cnsub,omitempty"`
 }
 
 // String 输出人类可读的清晰度描述。

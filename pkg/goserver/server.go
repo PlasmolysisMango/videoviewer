@@ -11,10 +11,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"videoviewer/pkg/av"
+	"videoviewer/pkg/av/browser"
 	"videoviewer/pkg/javdb"
 )
 
@@ -48,6 +50,8 @@ type Server struct {
 	av    *av.Client
 	cfg   Config
 
+	// imgClient 转发 Web 前端的图片请求（绕过第三方 CDN 的 CORS 限制）。
+	imgClient  *http.Client
 	httpServer *http.Server
 	mu         sync.Mutex
 	running    bool
@@ -66,15 +70,28 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Cookie != "" {
 		opts = append(opts, javdb.WithCookie(cfg.Cookie))
 	}
+	if cfg.Proxy != "" {
+		opts = append(opts, javdb.WithProxy(cfg.Proxy))
+	}
 
 	javdbClient, err := javdb.New(opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build av client (MissAV/Jable/HohoJ)
+	// Build av client (MissAV/Jable/HohoJ).
+	// MissAV/Jable 位于 Cloudflare 之后，标准库 Transport 会被 403 拦截，
+	// 因此默认注入 tls-client 浏览器指纹（同 cmd/vl 的做法）；代理一并下沉到 requester。
 	avOpts := av.ClientOptions{}
-	if cfg.Proxy != "" {
+	if r, err := browser.New(browser.Options{
+		Profile:        "chrome_150",
+		Proxy:          cfg.Proxy,
+		Timeout:        25 * time.Second,
+		FollowRedirect: true,
+	}); err == nil {
+		avOpts.HTTP = av.Options{Requester: r}
+	} else {
+		log.Printf("goserver: browser profile init failed (%v), falling back to std transport", err)
 		avOpts.HTTP = av.Options{Proxy: cfg.Proxy}
 	}
 	avClient, err := av.NewClient(avOpts)
@@ -82,10 +99,20 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
+	// 图片代理客户端：与主链路一致地走配置的代理。
+	imgTransport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.Proxy != "" {
+		if pu, perr := url.Parse(cfg.Proxy); perr == nil {
+			imgTransport.Proxy = http.ProxyURL(pu)
+		}
+	}
+	imgClient := &http.Client{Transport: imgTransport, Timeout: 30 * time.Second}
+
 	return &Server{
-		javdb: javdbClient,
-		av:    avClient,
-		cfg:   cfg,
+		javdb:     javdbClient,
+		av:        avClient,
+		cfg:       cfg,
+		imgClient: imgClient,
 	}, nil
 }
 
@@ -110,12 +137,19 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/magnets/", s.handleMagnets)
 	mux.HandleFunc("GET /api/tags", s.handleTags)
 	mux.HandleFunc("GET /api/actor/", s.handleActor)
+	mux.HandleFunc("GET /api/actor-movies/", s.handleActorMovies)
 	// AV endpoints (MissAV/Jable/HohoJ for playback and download)
 	mux.HandleFunc("GET /api/av/search", s.handleAVSearch)
 	mux.HandleFunc("GET /api/av/detail/", s.handleAVDetail)
 	mux.HandleFunc("GET /api/av/resolve/", s.handleAVResolve)
 	mux.HandleFunc("GET /api/av/play/", s.handleAVPlay)
 	mux.HandleFunc("POST /api/av/download/", s.handleAVDownload)
+	// Image proxy for Flutter Web (third-party CDNs send no CORS headers)
+	mux.HandleFunc("GET /api/img", s.handleImage)
+	// HLS relay: rewrite playlist & stream segments so browsers (no Referer control)
+	// can play Referer-gated CDNs like surrit
+	mux.HandleFunc("GET /api/hls/playlist", s.handleHlsPlaylist)
+	mux.HandleFunc("GET /api/hls/segment", s.handleHlsSegment)
 
 	// Apply CORS middleware
 	handler := cors(mux)

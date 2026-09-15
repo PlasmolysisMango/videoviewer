@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import 'api/client.dart';
 import 'providers/auth_provider.dart';
+import 'providers/theme_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/backend_launcher.dart';
@@ -58,47 +59,61 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (context) => AuthProvider(client)..loadSavedCredentials(),
-      child: MaterialApp(
-        title: 'JavDB',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-          useMaterial3: true,
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()..load()),
+        ChangeNotifierProvider(
+          create: (context) => AuthProvider(client)..loadSavedCredentials(),
         ),
-        initialRoute: '/home',
-        routes: {
-          '/login': (context) => const LoginScreen(),
-          '/home': (context) => const HomeScreen(),
-        },
-        builder: (context, child) {
-          // Show server start error dialog if needed
-          if (_serverStartError != null) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (context.mounted) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (dialogContext) => AlertDialog(
-                    title: const Text('后端服务启动失败'),
-                    content: SelectableText(
-                      _serverStartError!,
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                        child: const Text('继续 (部分功能不可用)'),
+      ],
+      child: Consumer<ThemeProvider>(
+        builder: (context, themeProvider, _) => MaterialApp(
+          title: 'JavDB',
+          debugShowCheckedModeBanner: false,
+          // 统一浅色主题（白色背景）；深色模式可由用户手动开启或跟随系统
+          theme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+            useMaterial3: true,
+          ),
+          darkTheme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(
+                seedColor: Colors.blue, brightness: Brightness.dark),
+            useMaterial3: true,
+          ),
+          themeMode: themeProvider.mode,
+          initialRoute: '/home',
+          routes: {
+            '/login': (context) => const LoginScreen(),
+            '/home': (context) => const HomeScreen(),
+          },
+          builder: (context, child) {
+            // Show server start error dialog if needed
+            if (_serverStartError != null) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (context.mounted) {
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (dialogContext) => AlertDialog(
+                      title: const Text('后端服务启动失败'),
+                      content: SelectableText(
+                        _serverStartError!,
+                        style: const TextStyle(fontSize: 12),
                       ),
-                    ],
-                  ),
-                );
-              }
-            });
-          }
-          return child ?? const SizedBox.shrink();
-        },
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(dialogContext).pop(),
+                          child: const Text('继续 (部分功能不可用)'),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+              });
+            }
+            return child ?? const SizedBox.shrink();
+          },
+        ),
       ),
     );
   }
