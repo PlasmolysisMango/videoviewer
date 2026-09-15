@@ -18,6 +18,7 @@ func main() {
 	token := flag.String("token", os.Getenv("JAVDB_TOKEN"), "App JWT token (or set JAVDB_TOKEN)")
 	cookie := flag.String("cookie", os.Getenv("JAVDB_COOKIE"), "Web session cookie (or set JAVDB_COOKIE)")
 	dlDir := flag.String("dl-dir", os.Getenv("JAVDB_DL_DIR"), "Download directory (or set JAVDB_DL_DIR)")
+	proxy := flag.String("proxy", os.Getenv("HTTP_PROXY"), "HTTP/SOCKS5 proxy URL (e.g., http://127.0.0.1:7890 or socks5://127.0.0.1:7891)")
 	flag.Parse()
 
 	cfg := goserver.Config{
@@ -26,6 +27,7 @@ func main() {
 		Token:       *token,
 		Cookie:      *cookie,
 		DownloadDir: *dlDir,
+		Proxy:       *proxy,
 	}
 
 	srv, err := goserver.New(cfg)
@@ -44,6 +46,9 @@ func main() {
 	log.Printf("API base: %s", *apiBase)
 	if *token != "" {
 		log.Printf("App token: configured")
+	}
+	if *proxy != "" {
+		log.Printf("Proxy: %s", *proxy)
 	}
 
 	// Wait for shutdown signal

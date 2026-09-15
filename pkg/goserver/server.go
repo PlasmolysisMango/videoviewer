@@ -30,6 +30,8 @@ type Config struct {
 	Cookie string
 	// DownloadDir is the directory for downloaded files
 	DownloadDir string
+	// Proxy is the HTTP/SOCKS5 proxy URL (e.g., "http://127.0.0.1:7890" or "socks5://127.0.0.1:7891")
+	Proxy string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -71,7 +73,11 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	// Build av client (MissAV/Jable/HohoJ)
-	avClient, err := av.NewClient(av.ClientOptions{})
+	avOpts := av.ClientOptions{}
+	if cfg.Proxy != "" {
+		avOpts.HTTP = av.Options{Proxy: cfg.Proxy}
+	}
+	avClient, err := av.NewClient(avOpts)
 	if err != nil {
 		return nil, err
 	}
