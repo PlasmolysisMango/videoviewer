@@ -34,6 +34,7 @@ class BackendLauncher {
   /// This must be called before making any API requests.
   /// On Android, the server is started via platform channel (gomobile).
   /// On Windows, the server is started as a separate process.
+  /// On Web, the backend must be running separately - this is a no-op.
   static Future<void> launch({
     String addr = '127.0.0.1:18888',
     String apiBase = '',
@@ -43,6 +44,14 @@ class BackendLauncher {
   }) async {
     if (_isInitialized) {
       debugPrint('BackendLauncher: already initialized');
+      return;
+    }
+
+    // Web platform: backend must be running separately
+    if (kIsWeb) {
+      debugPrint('BackendLauncher: web platform detected, skipping backend launch');
+      debugPrint('BackendLauncher: ensure Go server is running at $_baseUrl');
+      _isInitialized = true;
       return;
     }
 
@@ -76,6 +85,13 @@ class BackendLauncher {
   /// Stops the Go backend server.
   static Future<void> stop() async {
     if (!_isInitialized) {
+      return;
+    }
+
+    // Web platform: no backend to stop
+    if (kIsWeb) {
+      _isInitialized = false;
+      debugPrint('BackendLauncher: stopped (web)');
       return;
     }
 

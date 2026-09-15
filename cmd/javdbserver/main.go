@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":8080", "HTTP listen address")
+	addr := flag.String("addr", ":18888", "HTTP listen address")
 	apiBase := flag.String("api-base", goserver.DefaultConfig().APIBase, "JavDB API base URL")
 	token := flag.String("token", os.Getenv("JAVDB_TOKEN"), "App JWT token (or set JAVDB_TOKEN)")
 	cookie := flag.String("cookie", os.Getenv("JAVDB_COOKIE"), "Web session cookie (or set JAVDB_COOKIE)")
