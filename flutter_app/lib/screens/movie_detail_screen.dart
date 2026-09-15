@@ -30,9 +30,12 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   Map<String, dynamic>? _movieData;
   List<Magnet> _magnets = [];
   Map<String, dynamic>? _avData;
+  // 默认变体列表（惰性加载：不探测直接展示，点击播放才解析）
+  static const _defaultVariants = ['uncensored', 'cnsub', 'normal'];
+
   Map<String, List<VideoStream>> _streamsByVariant = {};
-  List<String> _availableVariants = [];
-  String _selectedVariant = 'normal';
+  List<String> _availableVariants = _defaultVariants;
+  String _selectedVariant = 'uncensored';
   // 片源选择（missav / jable / hohoj）
   List<String> _availableSources = [];
   String _selectedSource = '';
@@ -114,45 +117,18 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       final result = await _client.avDetail(widget.movieNumber, source: source);
       setState(() {
         _avData = result['video'] as Map<String, dynamic>?;
+        // 直接展示默认变体占位符，不发起探测请求
+        _availableVariants = _defaultVariants;
+        _streamError = null;
       });
       AppLogger.info('AV data loaded, m3u8: ${_avData?['m3u8']}');
-
-      // 轻量探测可用变体（仅 HTML，不拉播放列表）
-      _probeVariants();
     } catch (e) {
       AppLogger.error('AV data not available', e);
     }
   }
 
-  /// 轻量探测番号可用变体（仅抓取 HTML，不拉取播放列表）。
-  /// 用于详情页快速展示变体按钮，用户点击播放后才按需拉取实际流。
-  Future<void> _probeVariants() async {
-    try {
-      final source = _selectedSource.isNotEmpty ? _selectedSource : null;
-      final result = await _client.avProbe(widget.movieNumber, source: source);
-      final variantsList = (result['variants'] as List?)
-              ?.map((v) => v['kind'] as String?)
-              .whereType<String>()
-              .toList() ??
-          const <String>[];
-      setState(() {
-        _availableVariants = variantsList;
-        if (!_availableVariants.contains(_selectedVariant)) {
-          _selectedVariant =
-              _availableVariants.isNotEmpty ? _availableVariants.first : 'normal';
-        }
-        _streamError = null;
-      });
-      AppLogger.info('Probed variants: $variantsList');
-    } catch (e) {
-      final msg = e.toString();
-      setState(() => _streamError = msg);
-      AppLogger.warning('Probe failed: $e');
-    }
-  }
-
   /// 按需拉取指定变体的播放流（惰性加载）。
-  /// 仅在用户点击播放时调用，避免进入详情页后立即并行请求所有变体。
+  /// 仅在用户点击播放时调用，避免进入详情页后立即发起网络请求。
   Future<void> _resolveVariant(String variant) async {
     try {
       final source = _selectedSource.isNotEmpty ? _selectedSource : null;
@@ -192,15 +168,15 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     'hohoj': 'HohoJ',
   };
 
-  /// 切换片源站点时重新探测变体。
+  /// 切换片源站点时重置变体状态。
   void _onSourceChanged(String source) {
     if (source == _selectedSource) return;
     setState(() {
       _selectedSource = source;
-      // 清空旧的流，等待新源探测
+      // 清空旧的流，恢复默认变体占位符
       _streamsByVariant = {};
-      _availableVariants = [];
-      _selectedVariant = 'normal';
+      _availableVariants = _defaultVariants;
+      _selectedVariant = 'uncensored';
       _streamError = null;
     });
     _loadAvData();
@@ -249,7 +225,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
-  /// 播放按钮旁的变体下拉：存在多个变体时展示，单一片源时隐藏。
+  /// 播放按钮旁的变体下拉：始终展示三个变体供选择。
   Widget _buildVariantSelector() {
     if (_availableVariants.length < 2) return const SizedBox.shrink();
     return PopupMenuButton<String>(
