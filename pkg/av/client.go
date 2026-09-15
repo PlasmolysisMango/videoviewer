@@ -75,6 +75,11 @@ func (c *Client) Sources() []string {
 	return out
 }
 
+// SetCFCookie 动态注入 Cloudflare cf_clearance Cookie，后续请求自动携带。
+func (c *Client) SetCFCookie(host string, cred CFCredential) {
+	c.http.SetCFCredential(host, cred)
+}
+
 // Source 按名称获取数据源。
 func (c *Client) Source(name string) (Source, error) {
 	s, ok := c.byName[name]
@@ -183,6 +188,49 @@ func (c *Client) Resolve(ctx context.Context, code string, source string) ([]Str
 		lastErr = ErrNoStream
 	}
 	return nil, lastErr
+}
+
+// Prober 是可选接口，数据源实现它即可支持轻量变体探测。
+type Prober interface {
+	Probe(ctx context.Context, code string) (*ProbeResult, error)
+}
+
+// VariantResolver 是可选接口，数据源实现它即可支持按变体惰性加载。
+type VariantResolver interface {
+	ResolveVariant(ctx context.Context, code, variant string) ([]Stream, error)
+}
+
+// Probe 轻量探测番号的可用变体（仅抓取 HTML，不拉取播放列表）。
+// 用于前端在详情页快速展示变体按钮，用户点击后才按需调用 ResolveVariant。
+func (c *Client) Probe(ctx context.Context, code string, source string) (*ProbeResult, error) {
+	for _, s := range c.ordered(source) {
+		if p, ok := s.(Prober); ok {
+			result, err := p.Probe(ctx, code)
+			if err != nil {
+				log.Printf("[av] source=%s probe %s: %v", s.Name(), code, err)
+				return nil, err
+			}
+			return result, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: no source supports probe", ErrNotImplemented)
+}
+
+// ResolveVariant 按番号+变体解析播放流（按需加载）。
+// variant 为 "uncensored" / "cnsub" / "normal" 之一；空字符串表示默认变体。
+func (c *Client) ResolveVariant(ctx context.Context, code, variant, source string) ([]Stream, error) {
+	for _, s := range c.ordered(source) {
+		if vr, ok := s.(VariantResolver); ok {
+			streams, err := vr.ResolveVariant(ctx, code, variant)
+			if err != nil {
+				log.Printf("[av] source=%s resolve variant=%s %s: %v", s.Name(), variant, code, err)
+				return nil, err
+			}
+			return streams, nil
+		}
+	}
+	// 回退到全量解析
+	return c.Resolve(ctx, code, source)
 }
 
 // Play 解析并返回最适合播放的一路流（默认最高清晰度）。

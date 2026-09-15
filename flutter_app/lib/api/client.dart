@@ -222,10 +222,13 @@ class JavDBClient {
     }
   }
 
-  Future<Map<String, dynamic>> avResolve(String code, {String? source}) async {
+  Future<Map<String, dynamic>> avResolve(String code, {String? source, String? variant}) async {
     final params = <String, String>{};
     if (source != null && source.isNotEmpty) {
       params['source'] = source;
+    }
+    if (variant != null && variant.isNotEmpty) {
+      params['variant'] = variant;
     }
 
     final uri = Uri.parse('$baseUrl/api/av/resolve/$code')
@@ -237,6 +240,41 @@ class JavDBClient {
     } else {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'AV resolve failed');
+    }
+  }
+
+  /// 轻量探测番号可用变体（仅抓取 HTML，不拉取播放列表）。
+  /// 用于详情页快速展示变体按钮，用户点击后才按需调用 avResolve。
+  Future<Map<String, dynamic>> avProbe(String code, {String? source}) async {
+    final params = <String, String>{};
+    if (source != null && source.isNotEmpty) {
+      params['source'] = source;
+    }
+
+    final uri = Uri.parse('$baseUrl/api/av/probe/$code')
+        .replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'AV probe failed');
+    }
+  }
+
+  /// 注入 Cloudflare cf_clearance Cookie，后续请求自动携带。
+  Future<void> avSetCFCookie(String host, String cookie, {String? ua}) async {
+    final uri = Uri.parse('$baseUrl/api/av/cf-cookie');
+    final response = await http.post(uri, headers: _headers, body: jsonEncode({
+      'host': host,
+      'cookie': cookie,
+      if (ua != null) 'ua': ua,
+    }));
+
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'CF cookie injection failed');
     }
   }
 

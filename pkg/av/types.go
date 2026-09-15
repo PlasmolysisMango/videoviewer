@@ -69,6 +69,27 @@ type Stream struct {
 	CNSub bool `json:"cnsub,omitempty"`
 }
 
+// VariantInfo 描述一个视频番号的可用片源变体（轻量探测结果，不含实际流 URL）。
+// 用于前端在详情页展示变体按钮，用户点击后才按需拉取实际流。
+type VariantInfo struct {
+	// Kind 变体类型："uncensored" / "cnsub" / "normal"。
+	Kind string `json:"kind"`
+	// Label 人类可读的变体名称。
+	Label string `json:"label"`
+	// Available 该变体是否可用。
+	Available bool `json:"available"`
+}
+
+// ProbeResult 是一次轻量探测的完整结果。
+type ProbeResult struct {
+	// Code 番号。
+	Code string `json:"code"`
+	// Source 数据源。
+	Source string `json:"source"`
+	// Variants 可用变体列表（按优先级排序）。
+	Variants []VariantInfo `json:"variants"`
+}
+
 // String 输出人类可读的清晰度描述。
 func (s Stream) String() string {
 	q := s.Resolution

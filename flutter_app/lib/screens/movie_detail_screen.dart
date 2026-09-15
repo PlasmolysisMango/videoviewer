@@ -36,6 +36,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   // 片源选择（missav / jable / hohoj）
   List<String> _availableSources = [];
   String _selectedSource = '';
+  String? _streamError; // 片源解析错误信息
   bool _isLoading = true;
   String? _error;
   int _galleryPage = 0;
@@ -108,56 +109,73 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
 
   Future<void> _loadAvData() async {
     try {
-      AppLogger.info('Loading AV data for: ${widget.movieNumber}');
-      final result = await _client.avDetail(widget.movieNumber);
+      final source = _selectedSource.isNotEmpty ? _selectedSource : null;
+      AppLogger.info('Loading AV data for: ${widget.movieNumber}, source=$source');
+      final result = await _client.avDetail(widget.movieNumber, source: source);
       setState(() {
         _avData = result['video'] as Map<String, dynamic>?;
       });
       AppLogger.info('AV data loaded, m3u8: ${_avData?['m3u8']}');
 
-      // 拉取多路流（不同清晰度）供播放器切换
-      _loadStreams();
+      // 轻量探测可用变体（仅 HTML，不拉播放列表）
+      _probeVariants();
     } catch (e) {
-      AppLogger.warning('AV data not available: $e');
+      AppLogger.error('AV data not available', e);
     }
   }
 
-  /// 拉取全部可选片源（无码/中字/普通 × 各清晰度），按变体优先级排序。
-  /// 传入 _selectedSource 指定用户选择的数据源（missav/jable/hohoj）。
-  Future<void> _loadStreams() async {
+  /// 轻量探测番号可用变体（仅抓取 HTML，不拉取播放列表）。
+  /// 用于详情页快速展示变体按钮，用户点击播放后才按需拉取实际流。
+  Future<void> _probeVariants() async {
     try {
       final source = _selectedSource.isNotEmpty ? _selectedSource : null;
-      final result = await _client.avResolve(widget.movieNumber, source: source);
+      final result = await _client.avProbe(widget.movieNumber, source: source);
+      final variantsList = (result['variants'] as List?)
+              ?.map((v) => v['kind'] as String?)
+              .whereType<String>()
+              .toList() ??
+          const <String>[];
+      setState(() {
+        _availableVariants = variantsList;
+        if (!_availableVariants.contains(_selectedVariant)) {
+          _selectedVariant =
+              _availableVariants.isNotEmpty ? _availableVariants.first : 'normal';
+        }
+        _streamError = null;
+      });
+      AppLogger.info('Probed variants: $variantsList');
+    } catch (e) {
+      final msg = e.toString();
+      setState(() => _streamError = msg);
+      AppLogger.warning('Probe failed: $e');
+    }
+  }
+
+  /// 按需拉取指定变体的播放流（惰性加载）。
+  /// 仅在用户点击播放时调用，避免进入详情页后立即并行请求所有变体。
+  Future<void> _resolveVariant(String variant) async {
+    try {
+      final source = _selectedSource.isNotEmpty ? _selectedSource : null;
+      final result = await _client.avResolve(
+        widget.movieNumber,
+        source: source,
+        variant: variant,
+      );
       final rawList = (result['streams'] as List?)
               ?.map((s) => VideoStream.fromJson(s as Map<String, dynamic>))
               .toList() ??
           const <VideoStream>[];
-      _applyStreams(VideoStream.sortStreams(rawList));
-      AppLogger.info('Loaded ${rawList.length} streams from source=$_selectedSource');
+      final sorted = VideoStream.sortStreams(rawList);
+      setState(() {
+        _streamsByVariant[variant] = sorted;
+        _streamError = null;
+      });
+      AppLogger.info('Resolved $variant: ${sorted.length} streams');
     } catch (e) {
-      AppLogger.warning('Streams not available: $e');
+      final msg = e.toString();
+      setState(() => _streamError = msg);
+      AppLogger.error('Resolve variant $variant failed', e);
     }
-  }
-
-  /// 按片源变体分组（MissAV 里无码/中字/普通是不同的视频），
-  /// 默认选中按 无码 > 中字 > 普通 的优先级。
-  void _applyStreams(List<VideoStream> sorted) {
-    final groups = <String, List<VideoStream>>{};
-    for (final s in sorted) {
-      final key = s.uncensored == true
-          ? 'uncensored'
-          : (s.cnsub == true ? 'cnsub' : 'normal');
-      groups.putIfAbsent(key, () => []).add(s);
-    }
-    const order = ['uncensored', 'cnsub', 'normal'];
-    setState(() {
-      _streamsByVariant = groups;
-      _availableVariants = order.where(groups.containsKey).toList();
-      if (!_availableVariants.contains(_selectedVariant)) {
-        _selectedVariant =
-            _availableVariants.isNotEmpty ? _availableVariants.first : 'normal';
-      }
-    });
   }
 
   /// 片源变体显示名（MissAV 里无码/中字/原片是不同的视频）。
@@ -174,17 +192,18 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     'hohoj': 'HohoJ',
   };
 
-  /// 切换片源站点时重新解析流。
+  /// 切换片源站点时重新探测变体。
   void _onSourceChanged(String source) {
     if (source == _selectedSource) return;
     setState(() {
       _selectedSource = source;
-      // 清空旧的流，等待新源解析
+      // 清空旧的流，等待新源探测
       _streamsByVariant = {};
       _availableVariants = [];
       _selectedVariant = 'normal';
+      _streamError = null;
     });
-    _loadStreams();
+    _loadAvData();
   }
 
   /// 片源站点下拉选择器，始终展示在播放按钮行前方。
@@ -277,8 +296,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   }
 
   Future<void> _playVideo() async {
-    // 播放当前选中的片源（组内可切清晰度）；后台解析尚未完成时现场补拉，
-    // 最后回退 avData 单路 m3u8
+    // 惰性加载：如果该变体的流尚未解析，先按需拉取
     var streams = List<VideoStream>.from(
         _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
     if (streams.isEmpty) {
@@ -287,7 +305,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           const SnackBar(content: Text('正在解析视频源...')),
         );
       }
-      await _loadStreams();
+      await _resolveVariant(_selectedVariant);
       streams = List<VideoStream>.from(
           _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
       if (streams.isEmpty) {
@@ -295,7 +313,11 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         if (m3u8Url == null || m3u8Url.isEmpty) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('视频源不可用')),
+              SnackBar(content: Text(
+                _streamError != null
+                    ? '视频源不可用: $_streamError'
+                    : '视频源不可用',
+              )),
             );
           }
           return;

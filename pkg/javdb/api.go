@@ -144,32 +144,46 @@ func (b *apiBackend) SearchMovies(ctx context.Context, q Query) (*SearchResult, 
 }
 
 // SearchActors implements ActorSearcher via GET /v1/actors.
+// NOTE: The JavDB API's /v1/actors endpoint ignores the "search" parameter
+// and returns a static list of popular actors. We must filter client-side
+// using the same actorMatches logic as the web backend.
 func (b *apiBackend) SearchActors(ctx context.Context, q Query) ([]Actor, error) {
 	keyword := strings.TrimSpace(q.Keyword)
 	if keyword == "" {
 		return nil, fmt.Errorf("%w: empty keyword", ErrInvalidQuery)
 	}
+	want := NormalizeCode(keyword)
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	// Fetch enough pages to find matches (API doesn't filter server-side)
 	params := url.Values{}
-	params.Set("search", keyword)
 	params.Set("type", apiActorType(q.Category))
+	params.Set("limit", strconv.Itoa(max(limit*3, 60))) // fetch more to filter
 	if p := q.pageOrDefault(1); p > 1 {
 		params.Set("page", strconv.Itoa(p))
-	}
-	if q.Limit > 0 {
-		params.Set("limit", strconv.Itoa(q.Limit))
 	}
 	var out apiSearchData
 	if err := b.getJSON(ctx, "/v1/actors", params, &out); err != nil {
 		return nil, err
 	}
-	actors := make([]Actor, 0, len(out.Actors))
+	// Client-side filtering: API ignores search param
+	var matches []Actor
 	for _, a := range out.Actors {
-		actors = append(actors, a.toActor(b.t.Site()))
+		actor := a.toActor(b.t.Site())
+		if actorMatches(actor, want, keyword) {
+			matches = append(matches, actor)
+		}
 	}
-	if len(actors) == 0 {
+	if len(matches) == 0 {
 		return nil, fmt.Errorf("%w: actor %q", ErrEmptyResult, keyword)
 	}
-	return actors, nil
+	// Apply limit
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
 }
 
 // ---------------------------------------------------------------------------

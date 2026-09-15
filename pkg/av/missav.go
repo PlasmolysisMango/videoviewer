@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -17,18 +19,23 @@ import (
 // 参考 NASSAV：形如 m3u8|<hex|-segs>|com|surrit|https|video，段序需反转。
 var missavUUIDRe = regexp.MustCompile(`m3u8\|([a-f0-9|]+)\|com\|surrit\|https\|video`)
 
+// missavFallbackDomains 是主域名被 Cloudflare 403 封锁时的备选镜像。
+// 按可用性从高到低排列；missav.ai 已被封锁故不在列表中。
+var missavFallbackDomains = []string{"missav.ws", "missav123.com"}
+
 // MissAVSource 是 MissAV 数据源实现。
 type MissAVSource struct {
 	http   *HTTPClient
-	domain string // 如 "missav.ai"
+	domain string // 如 "missav.ws"
 	// surritBase 是流媒体 CDN 基地址，测试可指向 stub。
 	surritBase string
 }
 
 // NewMissAVSource 构造 MissAV 源，domain 为空时使用默认站点。
+// missav.ai 已被 Cloudflare 403 封锁，默认使用 missav.ws（可用镜像）。
 func NewMissAVSource(hc *HTTPClient, domain string) *MissAVSource {
 	if domain == "" {
-		domain = "missav.ai"
+		domain = "missav.ws"
 	}
 	return &MissAVSource{http: hc, domain: domain, surritBase: "https://surrit.com"}
 }
@@ -74,9 +81,27 @@ func (s *MissAVSource) variantCandidates(code string) []variantPage {
 }
 
 // fetchPage 拉取单个详情页并校验页面有效性（og:title 或 uuid 存在）。
+// 当主域名返回 403 时自动尝试 fallback 域名。
 func (s *MissAVSource) fetchPage(ctx context.Context, u string) (string, error) {
 	body, err := s.http.GetWithRetry(ctx, u, s.base()+"/", 2)
 	if err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) && he.Status == http.StatusForbidden {
+			// 主域名被 CF 封锁，尝试 fallback 域名
+			for _, fb := range missavFallbackDomains {
+				fbURL := strings.Replace(u, s.domain, fb, 1)
+				if fbURL == u {
+					continue // 已经是 fallback 域名
+				}
+				fbBody, fbErr := s.http.GetWithRetry(ctx, fbURL, "https://"+fb+"/", 2)
+				if fbErr == nil {
+					fbHTML := string(fbBody)
+					if missavUUIDRe.MatchString(fbHTML) || ogTitleRe.MatchString(fbHTML) {
+						return fbHTML, nil
+					}
+				}
+			}
+		}
 		return "", err
 	}
 	html := string(body)
@@ -183,6 +208,148 @@ func (s *MissAVSource) Detail(ctx context.Context, code string) (*Video, error) 
 		v.Tags = collectTexts(doc, "a[href*='tag'], a[href*='genre'], .tag")
 	}
 	return v, nil
+}
+
+// Probe 轻量探测番号的可用变体（仅抓取 HTML 提取 UUID，不拉取播放列表）。
+// 用于前端在详情页快速展示变体按钮，用户点击后才按需调用 ResolveVariant。
+// 请求间加入随机延迟以避免触发 Cloudflare 频率限制。
+func (s *MissAVSource) Probe(ctx context.Context, code string) (*ProbeResult, error) {
+	code = normalizeCode(code)
+	candidates := s.variantCandidates(code)
+
+	variants := make([]VariantInfo, 0, len(candidates))
+	seenKind := map[string]bool{}
+
+	for i, cand := range candidates {
+		// 随机延迟 200-800ms，避免密集请求触发 CF
+		if i > 0 {
+			delay := time.Duration(200+rand.Intn(600)) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		html, err := s.fetchPage(ctx, cand.url)
+		if err != nil {
+			continue
+		}
+		uuid, ok := extractMissAVUUID(html)
+		if !ok || uuid == "" {
+			continue
+		}
+		// 变体标记
+		tags := missavPageTags(html)
+		unc := cand.kind == "uncensored" || tagsMatchAny(tags, missavUncensoredTagHints)
+		cn := cand.kind == "cnsub" || tagsMatchAny(tags, missavCNSubTagHints)
+
+		kind := "normal"
+		label := "原片"
+		if unc {
+			kind = "uncensored"
+			label = "无码"
+		} else if cn {
+			kind = "cnsub"
+			label = "中字"
+		}
+
+		if seenKind[kind] {
+			continue // 同一变体去重
+		}
+		seenKind[kind] = true
+		variants = append(variants, VariantInfo{
+			Kind:      kind,
+			Label:     label,
+			Available: true,
+		})
+	}
+
+	if len(variants) == 0 {
+		return nil, fmt.Errorf("%w: no variants found for %s", ErrNotFound, code)
+	}
+
+	// 按优先级排序：无码 > 中字 > 原片
+	sortVariants(variants)
+
+	return &ProbeResult{
+		Code:     code,
+		Source:   s.Name(),
+		Variants: variants,
+	}, nil
+}
+
+// ResolveVariant 仅解析指定变体的播放流（按需加载）。
+// variant 为空时回退到 Resolve 全量解析。
+func (s *MissAVSource) ResolveVariant(ctx context.Context, code, variant string) ([]Stream, error) {
+	code = normalizeCode(code)
+	candidates := s.variantCandidates(code)
+
+	// 筛选目标变体
+	var target *variantPage
+	for i := range candidates {
+		c := &candidates[i]
+		if variantMatchesKind(c.kind, variant) {
+			target = c
+			break
+		}
+	}
+	if target == nil {
+		// variant 不匹配任何候选，回退全量解析
+		return s.Resolve(ctx, code)
+	}
+
+	html, err := s.fetchPage(ctx, target.url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch variant page: %w", err)
+	}
+	uuid, ok := extractMissAVUUID(html)
+	if !ok {
+		return nil, fmt.Errorf("%w: no UUID in page", ErrNotFound)
+	}
+
+	playlist := fmt.Sprintf("%s/%s/playlist.m3u8", s.surritBase, uuid)
+	streams, err := FetchStreams(ctx, s.http, playlist, s.base()+"/")
+	if err != nil {
+		return nil, fmt.Errorf("fetch playlist: %w", err)
+	}
+
+	// 打变体标记
+	tags := missavPageTags(html)
+	unc := target.kind == "uncensored" || tagsMatchAny(tags, missavUncensoredTagHints)
+	cn := target.kind == "cnsub" || tagsMatchAny(tags, missavCNSubTagHints)
+	for i := range streams {
+		streams[i].Source = s.Name()
+		streams[i].Uncensored = unc
+		streams[i].CNSub = cn
+	}
+
+	return streams, nil
+}
+
+// variantMatchesKind 判断候选变体是否匹配目标 variant。
+func variantMatchesKind(candidateKind, targetVariant string) bool {
+	switch targetVariant {
+	case "uncensored":
+		return candidateKind == "uncensored"
+	case "cnsub":
+		return candidateKind == "cnsub"
+	case "normal", "":
+		return candidateKind == "normal"
+	}
+	return false
+}
+
+// sortVariants 按优先级排序变体：无码 > 中字 > 原片。
+func sortVariants(variants []VariantInfo) {
+	priority := map[string]int{"uncensored": 0, "cnsub": 1, "normal": 2}
+	for i := 0; i < len(variants)-1; i++ {
+		for j := i + 1; j < len(variants); j++ {
+			if priority[variants[i].Kind] > priority[variants[j].Kind] {
+				variants[i], variants[j] = variants[j], variants[i]
+			}
+		}
+	}
 }
 
 // Resolve 实现 Source：解析番号的全部可用片源（并行遍历无码/中字/普通/镜像变体页），

@@ -366,8 +366,16 @@ func (s *Server) handleAVResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	code := parts[4]
 	source := r.URL.Query().Get("source")
+	variant := r.URL.Query().Get("variant") // 可选："uncensored" / "cnsub" / "normal"
 
-	streams, err := s.av.Resolve(r.Context(), code, source)
+	// 惰性加载：指定 variant 时仅解析该变体，未指定时回退全量解析
+	var streams []av.Stream
+	var err error
+	if variant != "" {
+		streams, err = s.av.ResolveVariant(r.Context(), code, variant, source)
+	} else {
+		streams, err = s.av.Resolve(r.Context(), code, source)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -375,6 +383,58 @@ func (s *Server) handleAVResolve(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"streams": streams,
+	})
+}
+
+// handleAVProbe 轻量探测番号的可用变体（仅抓取 HTML，不拉取播放列表）。
+// 用于前端在详情页快速展示变体按钮，用户点击后才按需调用 resolve。
+func (s *Server) handleAVProbe(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 {
+		writeError(w, http.StatusBadRequest, "video code required")
+		return
+	}
+	code := parts[4]
+	source := r.URL.Query().Get("source")
+
+	result, err := s.av.Probe(r.Context(), code, source)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleAVCFCookie 接受前端/脚本提交的 Cloudflare cf_clearance Cookie。
+// 提交后服务端会存储并在后续请求中自动注入，绕过 CF 质询。
+//
+//	POST /api/av/cf-cookie
+//	{"host": "missav.ws", "cookie": "cf_clearance=xxx", "ua": "Mozilla/5.0..."}
+func (s *Server) handleAVCFCookie(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host   string `json:"host"`
+		Cookie string `json:"cookie"`
+		UA     string `json:"ua"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Host == "" || req.Cookie == "" {
+		writeError(w, http.StatusBadRequest, "host and cookie are required")
+		return
+	}
+
+	cred := av.CFCredential{
+		Cookie: req.Cookie,
+		UA:     req.UA,
+	}
+	s.av.SetCFCookie(req.Host, cred)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"host":   req.Host,
 	})
 }
 

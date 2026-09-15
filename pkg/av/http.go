@@ -15,7 +15,8 @@ import (
 )
 
 // defaultUserAgent 是模拟真实浏览器的 UA。可通过 Options.UserAgent 覆盖。
-const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+// 版本与 browser.go 的 TLS profile (chrome_150) 对齐，避免 CF 交叉校验指纹/UA 不一致。
+const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 
 // HTTPClient 封装对目标站点的 HTTP 访问，提供：
 //   - 浏览器风格请求头
@@ -57,6 +58,17 @@ func (c CFCredential) Valid() bool {
 		return false
 	}
 	return c.Expires.IsZero() || time.Now().Before(c.Expires)
+}
+
+// SetCFCredential 动态注入/更新某个主机的 CF 凭证（线程安全）。
+// 用于接收前端/脚本提交的 cf_clearance Cookie。
+func (c *HTTPClient) SetCFCredential(host string, cred CFCredential) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cf == nil {
+		c.cf = map[string]CFCredential{}
+	}
+	c.cf[normalizeHost(host)] = cred
 }
 
 // Requester 是最小的 HTTP 执行抽象（等价于 *http.Client 的核心方法）。

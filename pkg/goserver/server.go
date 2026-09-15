@@ -142,9 +142,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/av/sources", s.handleAVSources)
 	mux.HandleFunc("GET /api/av/search", s.handleAVSearch)
 	mux.HandleFunc("GET /api/av/detail/", s.handleAVDetail)
+	mux.HandleFunc("GET /api/av/probe/", s.handleAVProbe)
 	mux.HandleFunc("GET /api/av/resolve/", s.handleAVResolve)
 	mux.HandleFunc("GET /api/av/play/", s.handleAVPlay)
 	mux.HandleFunc("POST /api/av/download/", s.handleAVDownload)
+	mux.HandleFunc("POST /api/av/cf-cookie", s.handleAVCFCookie)
 	// Image proxy for Flutter Web (third-party CDNs send no CORS headers)
 	mux.HandleFunc("GET /api/img", s.handleImage)
 	// HLS relay: rewrite playlist & stream segments so browsers (no Referer control)
@@ -159,7 +161,7 @@ func (s *Server) Start() error {
 		Addr:         s.cfg.Addr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 60 * time.Second, // 加长以适应 Probe 的随机延迟
 		IdleTimeout:  60 * time.Second,
 	}
 
