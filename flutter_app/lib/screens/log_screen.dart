@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../api/client.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
@@ -96,8 +97,11 @@ class _LogScreenState extends State<LogScreen> {
               itemCount: AppLogger.logs.length,
               itemBuilder: (context, index) {
                 final log = AppLogger.logs[index];
-                return ListTile(
+                final isExpandable = log.message.length > 100;
+                return ExpansionTile(
                   dense: true,
+                  tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                  childrenPadding: const EdgeInsets.only(left: 56, bottom: 8),
                   leading: Icon(
                     log.level == 'ERROR'
                         ? Icons.error
@@ -113,14 +117,34 @@ class _LogScreenState extends State<LogScreen> {
                   ),
                   title: Text(
                     log.message,
-                    style: const TextStyle(fontSize: 12),
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: log.level == 'ERROR' ? Colors.red[700] : null,
+                    ),
+                    maxLines: isExpandable ? 2 : null,
+                    overflow: isExpandable ? TextOverflow.ellipsis : null,
                   ),
                   subtitle: Text(
-                    '${log.timestamp.hour.toString().padLeft(2, '0')}:${log.timestamp.minute.toString().padLeft(2, '0')}:${log.timestamp.second.toString().padLeft(2, '0')}',
+                    '${log.timestamp.hour.toString().padLeft(2, '0')}:${log.timestamp.minute.toString().padLeft(2, '0')}:${log.timestamp.second.toString().padLeft(2, '0')}  [${log.level}]',
                     style: const TextStyle(fontSize: 10, color: Colors.grey),
                   ),
+                  children: [
+                    SelectableText(
+                      log.message,
+                      style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                    ),
+                    const SizedBox(height: 4),
+                    TextButton.icon(
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: log.message));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('已复制'), duration: Duration(seconds: 1)),
+                        );
+                      },
+                      icon: const Icon(Icons.copy, size: 14),
+                      label: const Text('复制', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
                 );
               },
             ),

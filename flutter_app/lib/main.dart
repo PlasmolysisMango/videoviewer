@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -13,13 +16,32 @@ String? _serverStartError;
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Global error handlers - catch all uncaught errors
+  FlutterError.onError = (FlutterErrorDetails details) {
+    AppLogger.error('FlutterError', details.exception, details.stack);
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    AppLogger.error('PlatformDispatcher error', error, stack);
+    return true; // prevent crash
+  };
+
+  // Zone error handler for async errors
+  runZonedGuarded(() async {
+    await _runApp();
+  }, (error, stack) {
+    AppLogger.error('Zone error', error, stack);
+  });
+}
+
+Future<void> _runApp() async {
   // Launch the Go backend server
   try {
     AppLogger.info('Starting backend server...');
     await BackendLauncher.launch();
     AppLogger.info('Backend server started successfully');
-  } catch (e) {
-    AppLogger.error('Failed to start backend server', e);
+  } catch (e, stack) {
+    AppLogger.error('Failed to start backend server', e, stack);
     _serverStartError = e.toString();
   }
 

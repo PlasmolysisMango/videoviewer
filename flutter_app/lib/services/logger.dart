@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/foundation.dart';
 
 /// Simple logging service for debugging
@@ -11,21 +13,34 @@ class AppLogger {
 
   static void info(String message) {
     _addLog('INFO', message);
-    debugPrint('[INFO] $message');
+    _print('[INFO] $message');
   }
 
-  static void error(String message, [Object? error]) {
-    _addLog('ERROR', '$message${error != null ? ': $error' : ''}');
-    debugPrint('[ERROR] $message $error');
+  static void error(String message, [Object? error, StackTrace? stackTrace]) {
+    final fullMessage = '$message${error != null ? ': $error' : ''}';
+    _addLog('ERROR', fullMessage);
+    _print('[ERROR] $fullMessage');
+    if (stackTrace != null) {
+      _print('[ERROR] StackTrace: $stackTrace');
+    }
   }
 
   static void warning(String message) {
     _addLog('WARN', message);
-    debugPrint('[WARN] $message');
+    _print('[WARN] $message');
   }
 
   static void clear() {
     _logs.clear();
+  }
+
+  /// Print to both console and devtools timeline
+  static void _print(String message) {
+    // Use print for guaranteed console output
+    // ignore: avoid_print
+    print(message);
+    // Also send to devtools timeline for structured viewing
+    developer.log(message, name: 'AppLogger');
   }
 
   static void _addLog(String level, String message) {
