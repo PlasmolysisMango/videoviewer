@@ -63,6 +63,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if page <= 0 {
 		page = 1
 	}
+	sort := javdb.SortBy(r.URL.Query().Get("sort"))
 
 	// scope=actor searches actor profiles by name/alias, so the frontend can
 	// offer direct entry into an actor page instead of keyword results.
@@ -79,23 +80,63 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := s.javdb.SearchMovies(r.Context(), q, javdb.WithPage(page, limit))
+	opts := []javdb.QueryOption{javdb.WithPage(page, limit)}
+	if sort != "" {
+		opts = append(opts, javdb.WithSort(sort))
+	}
+	results, err := s.javdb.SearchMovies(r.Context(), q, opts...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
+	// 当搜索关键词精确匹配某部影片的番号时，从详情页拉取演员信息填入搜索结果。
+	// JavDB 搜索 API 不返回影片演员，只有详情页才有；番号搜索时用户期望看到正确的演员。
+	var enrichedActors []javdb.Actor
+	if len(results.Movies) > 0 {
+		want := javdb.NormalizeCode(q)
+		for i := range results.Movies {
+			if results.Movies[i].Code == want {
+				if detail, derr := s.javdb.Movie(r.Context(), results.Movies[i].ID); derr == nil && detail != nil {
+					for _, ac := range detail.ActorCredits {
+						if ac.Name != "" {
+							enrichedActors = append(enrichedActors, javdb.Actor{
+								ID:   ac.ID,
+								Name: ac.Name,
+								Href: ac.Href,
+							})
+						}
+					}
+					// 把演员名也填入影片的 Actors 字段
+					results.Movies[i].Actors = nil
+					for _, ac := range detail.ActorCredits {
+						if ac.Name != "" {
+							results.Movies[i].Actors = append(results.Movies[i].Actors, ac.Name)
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
 	// The app-API backend attaches matched actors to movie results; the web
-	// backend leaves the slice empty. Pass through either way.
+	// backend leaves the slice empty. When we enriched actors from detail,
+	// prefer those; otherwise pass through the original actor results.
+	actors := results.Actors
+	if len(enrichedActors) > 0 {
+		actors = enrichedActors
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"movies":  results.Movies,
-		"actors":  results.Actors,
+		"actors":  actors,
 		"page":    results.Current,
 		"maxPage": results.MaxPage,
 	})
 }
 
 // handleActorMovies serves the works list of one actor: /api/actor-movies/{id}.
+// 支持 sort 参数进行客户端排序（后端 HTML 抓取无服务端排序能力）。
 func (s *Server) handleActorMovies(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 || parts[3] == "" {
@@ -115,11 +156,50 @@ func (s *Server) handleActorMovies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 客户端排序：后端 HTML 抓取无服务端排序能力，在此对返回结果排序。
+	sort := javdb.SortBy(r.URL.Query().Get("sort"))
+	if sort != "" {
+		sortMovies(results.Movies, sort)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"movies":  results.Movies,
 		"page":    results.Current,
 		"maxPage": results.MaxPage,
 	})
+}
+
+// sortMovies 对影片列表进行客户端排序。
+// 支持的排序：newest（最新）、oldest（最早）、highest（最高评分）、
+// most_magnets（最多磁链）、most_played（最多播放）、most_watched（最多人看）。
+func sortMovies(movies []javdb.Movie, sort javdb.SortBy) {
+	if len(movies) == 0 {
+		return
+	}
+	// 使用简单冒泡排序，影片列表通常不长
+	for i := 0; i < len(movies)-1; i++ {
+		for j := i + 1; j < len(movies); j++ {
+			swap := false
+			switch sort {
+			case javdb.SortNewest:
+				swap = movies[j].ReleaseDate > movies[i].ReleaseDate
+			case javdb.SortOldest:
+				swap = movies[j].ReleaseDate < movies[i].ReleaseDate
+			case javdb.SortHighest:
+				swap = movies[j].Score > movies[i].Score
+			case javdb.SortLowest:
+				swap = movies[j].Score < movies[i].Score
+			case javdb.SortMostMagnet:
+				swap = movies[j].MagnetsCount > movies[i].MagnetsCount
+			case javdb.SortMostPlayed, javdb.SortMostWatched:
+				// 无直接播放/观看数字段，回退到评分
+				swap = movies[j].Score > movies[i].Score
+			}
+			if swap {
+				movies[i], movies[j] = movies[j], movies[i]
+			}
+		}
+	}
 }
 
 func (s *Server) handleMovie(w http.ResponseWriter, r *http.Request) {
@@ -562,6 +642,14 @@ func (s *Server) handleHlsSegment(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// handleAVSources 返回已注册的 AV 数据源列表（按优先级排序）。
+func (s *Server) handleAVSources(w http.ResponseWriter, r *http.Request) {
+	sources := s.av.Sources()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sources": sources,
+	})
 }
 
 // health check endpoint

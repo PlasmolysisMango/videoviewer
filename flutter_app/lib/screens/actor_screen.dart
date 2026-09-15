@@ -23,6 +23,7 @@ class _ActorScreenState extends State<ActorScreen> {
   final _scrollController = ScrollController();
   List<Movie> _movies = [];
   MovieViewMode _viewMode = MovieViewMode.grid;
+  String _sort = '';  // 当前排序方式
   bool _isLoading = true;
   bool _isLoadingMore = false;
   bool _hasMore = true;
@@ -54,18 +55,24 @@ class _ActorScreenState extends State<ActorScreen> {
     }
   }
 
-  Future<void> _loadFirstPage() async {
+  Future<void> _loadFirstPage({String? sort}) async {
+    final currentSort = sort ?? _sort;
     setState(() {
       _isLoading = true;
       _error = null;
     });
     try {
-      AppLogger.info('Loading actor movies: ${widget.actor.id}');
-      final result = await _client.actorMovies(widget.actor.id, page: 1);
+      AppLogger.info('Loading actor movies: ${widget.actor.id}, sort=$currentSort');
+      final result = await _client.actorMovies(
+        widget.actor.id,
+        page: 1,
+        sort: currentSort.isNotEmpty ? currentSort : null,
+      );
       _page = 1;
       _hasMore = _moviesFrom(result).isNotEmpty;
       setState(() {
         _movies = _moviesFrom(result);
+        if (sort != null) _sort = sort;
         _isLoading = false;
       });
     } catch (e) {
@@ -81,7 +88,11 @@ class _ActorScreenState extends State<ActorScreen> {
     setState(() => _isLoadingMore = true);
     try {
       final next = _page + 1;
-      final result = await _client.actorMovies(widget.actor.id, page: next);
+      final result = await _client.actorMovies(
+        widget.actor.id,
+        page: next,
+        sort: _sort.isNotEmpty ? _sort : null,
+      );
       final more = _moviesFrom(result);
       setState(() {
         _page = next;
@@ -121,6 +132,14 @@ class _ActorScreenState extends State<ActorScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: SortSelector(
+              options: actorSortOptions,
+              selected: _sort,
+              onChanged: (s) => _loadFirstPage(sort: s),
+            ),
+          ),
           ViewModeToggle(
             mode: _viewMode,
             onChanged: (m) => setState(() => _viewMode = m),

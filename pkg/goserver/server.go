@@ -139,6 +139,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/actor/", s.handleActor)
 	mux.HandleFunc("GET /api/actor-movies/", s.handleActorMovies)
 	// AV endpoints (MissAV/Jable/HohoJ for playback and download)
+	mux.HandleFunc("GET /api/av/sources", s.handleAVSources)
 	mux.HandleFunc("GET /api/av/search", s.handleAVSearch)
 	mux.HandleFunc("GET /api/av/detail/", s.handleAVDetail)
 	mux.HandleFunc("GET /api/av/resolve/", s.handleAVResolve)

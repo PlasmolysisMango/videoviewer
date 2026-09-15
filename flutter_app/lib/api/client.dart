@@ -36,14 +36,19 @@ class JavDBClient {
   }
 
   /// 影片/演员搜索：scope 传 'movie'（默认）或 'actor'。
+  /// sort 可选：relevance / newest / oldest / highest / lowest / most_magnets。
   Future<Map<String, dynamic>> search(String query,
-      {int page = 1, int limit = 20, String scope = 'movie'}) async {
-    final uri = Uri.parse('$baseUrl/api/search').replace(queryParameters: {
+      {int page = 1, int limit = 20, String scope = 'movie', String? sort}) async {
+    final params = <String, String>{
       'q': query,
       'page': page.toString(),
       'limit': limit.toString(),
       'scope': scope,
-    });
+    };
+    if (sort != null && sort.isNotEmpty) {
+      params['sort'] = sort;
+    }
+    final uri = Uri.parse('$baseUrl/api/search').replace(queryParameters: params);
     final response = await http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
@@ -138,14 +143,19 @@ class JavDBClient {
     }
   }
 
-  /// 演员的作品列表（演员专题页），支持分页。
+  /// 演员的作品列表（演员专题页），支持分页和排序。
+  /// sort 可选：newest / oldest / highest / most_magnets。
   Future<Map<String, dynamic>> actorMovies(String actorId,
-      {int page = 1, int limit = 20}) async {
-    final uri = Uri.parse('$baseUrl/api/actor-movies/$actorId')
-        .replace(queryParameters: {
+      {int page = 1, int limit = 20, String? sort}) async {
+    final params = <String, String>{
       'page': page.toString(),
       'limit': limit.toString(),
-    });
+    };
+    if (sort != null && sort.isNotEmpty) {
+      params['sort'] = sort;
+    }
+    final uri = Uri.parse('$baseUrl/api/actor-movies/$actorId')
+        .replace(queryParameters: params);
     final response = await http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
@@ -157,6 +167,19 @@ class JavDBClient {
   }
 
   // AV endpoints (MissAV/Jable/HohoJ)
+
+  Future<List<String>> avSources() async {
+    final uri = Uri.parse('$baseUrl/api/av/sources');
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['sources'] as List).cast<String>();
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get AV sources');
+    }
+  }
 
   Future<Map<String, dynamic>> avSearch(String query,
       {int page = 1, int limit = 20, String? source}) async {

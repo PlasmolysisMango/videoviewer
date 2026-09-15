@@ -33,6 +33,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   Map<String, List<VideoStream>> _streamsByVariant = {};
   List<String> _availableVariants = [];
   String _selectedVariant = 'normal';
+  // 片源选择（missav / jable / hohoj）
+  List<String> _availableSources = [];
+  String _selectedSource = '';
   bool _isLoading = true;
   String? _error;
   int _galleryPage = 0;
@@ -43,6 +46,31 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     _client = JavDBClient(BackendLauncher.baseUrl);
     _loadMovie();
     _loadAvData();
+    _loadSources();
+  }
+
+  /// 从后端拉取已注册的 AV 数据源列表（missav/jable/hohoj）。
+  Future<void> _loadSources() async {
+    try {
+      final sources = await _client.avSources();
+      if (!mounted) return;
+      setState(() {
+        _availableSources = sources;
+        // 默认选中第一个（优先级最高）
+        if (_selectedSource.isEmpty && sources.isNotEmpty) {
+          _selectedSource = sources.first;
+        }
+      });
+      AppLogger.info('Available AV sources: $sources');
+    } catch (e) {
+      // 回退：硬编码默认值
+      AppLogger.warning('Failed to load AV sources, using defaults: $e');
+      if (!mounted) return;
+      setState(() {
+        _availableSources = ['missav', 'jable', 'hohoj'];
+        if (_selectedSource.isEmpty) _selectedSource = 'missav';
+      });
+    }
   }
 
   Future<void> _loadMovie() async {
@@ -95,15 +123,17 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   }
 
   /// 拉取全部可选片源（无码/中字/普通 × 各清晰度），按变体优先级排序。
+  /// 传入 _selectedSource 指定用户选择的数据源（missav/jable/hohoj）。
   Future<void> _loadStreams() async {
     try {
-      final result = await _client.avResolve(widget.movieNumber);
+      final source = _selectedSource.isNotEmpty ? _selectedSource : null;
+      final result = await _client.avResolve(widget.movieNumber, source: source);
       final rawList = (result['streams'] as List?)
               ?.map((s) => VideoStream.fromJson(s as Map<String, dynamic>))
               .toList() ??
           const <VideoStream>[];
       _applyStreams(VideoStream.sortStreams(rawList));
-      AppLogger.info('Loaded ${rawList.length} streams');
+      AppLogger.info('Loaded ${rawList.length} streams from source=$_selectedSource');
     } catch (e) {
       AppLogger.warning('Streams not available: $e');
     }
@@ -137,11 +167,74 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     'normal': '原片',
   };
 
-  /// 播放按钮旁的片源下拉：存在多个变体时展示，单一片源时隐藏。
+  /// 片源站点显示名。
+  static const _sourceLabels = {
+    'missav': 'MissAV',
+    'jable': 'Jable',
+    'hohoj': 'HohoJ',
+  };
+
+  /// 切换片源站点时重新解析流。
+  void _onSourceChanged(String source) {
+    if (source == _selectedSource) return;
+    setState(() {
+      _selectedSource = source;
+      // 清空旧的流，等待新源解析
+      _streamsByVariant = {};
+      _availableVariants = [];
+      _selectedVariant = 'normal';
+    });
+    _loadStreams();
+  }
+
+  /// 片源站点下拉选择器，始终展示在播放按钮行前方。
+  Widget _buildSourceSelector() {
+    if (_availableSources.isEmpty) return const SizedBox.shrink();
+    return PopupMenuButton<String>(
+      tooltip: '选择片源站点',
+      onSelected: _onSourceChanged,
+      itemBuilder: (context) => [
+        for (final s in _availableSources)
+          CheckedPopupMenuItem<String>(
+            value: s,
+            checked: s == _selectedSource,
+            child: Text(_sourceLabels[s] ?? s),
+          ),
+      ],
+      child: Container(
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          border: Border.all(
+              color: Theme.of(context).colorScheme.outlineVariant),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '片源',
+              style: TextStyle(
+                  fontSize: 13, color: Theme.of(context).hintColor),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              _sourceLabels[_selectedSource] ?? _selectedSource,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(width: 4),
+            const Icon(Icons.expand_more, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 播放按钮旁的变体下拉：存在多个变体时展示，单一片源时隐藏。
   Widget _buildVariantSelector() {
     if (_availableVariants.length < 2) return const SizedBox.shrink();
     return PopupMenuButton<String>(
-      tooltip: '选择片源',
+      tooltip: '选择变体',
       onSelected: (v) => setState(() => _selectedVariant = v),
       itemBuilder: (context) => [
         for (final v in _availableVariants)
@@ -166,7 +259,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              '片源',
+              '变体',
               style: TextStyle(
                   fontSize: 13, color: Theme.of(context).hintColor),
             ),
@@ -486,9 +579,11 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           ]),
           const SizedBox(height: 24),
           // 播放/下载按钮默认展示；AV 流在后台解析，点击播放时如未就绪会现场补拉
-          // MissAV 里无码/中字/普通是不同的视频，多片源时在播放按钮旁下拉选择
+          // 片源站点选择（missav/jable/hohoj）+ MissAV 变体选择（无码/中字/原片）
           Row(
             children: [
+              _buildSourceSelector(),
+              const SizedBox(width: 8),
               _buildVariantSelector(),
               const SizedBox(width: 12),
               Expanded(

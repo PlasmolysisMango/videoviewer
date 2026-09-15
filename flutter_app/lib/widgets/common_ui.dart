@@ -518,3 +518,91 @@ class ErrorRetryView extends StatelessWidget {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// 排序选择器
+// ---------------------------------------------------------------------------
+
+/// 排序选项：value 传后端，label 显示给用户。
+class SortOption {
+  final String value;
+  final String label;
+  const SortOption(this.value, this.label);
+}
+
+/// 搜索结果页可用的排序选项。
+const searchSortOptions = [
+  SortOption('', '相关度'),
+  SortOption('newest', '最新发行'),
+  SortOption('oldest', '最早发行'),
+  SortOption('highest', '最高评分'),
+  SortOption('lowest', '最低评分'),
+  SortOption('most_magnets', '最多磁链'),
+];
+
+/// 演员作品页可用的排序选项（后端为客户端排序，无“相关度”）。
+const actorSortOptions = [
+  SortOption('', '默认'),
+  SortOption('newest', '最新发行'),
+  SortOption('oldest', '最早发行'),
+  SortOption('highest', '最高评分'),
+  SortOption('lowest', '最低评分'),
+  SortOption('most_magnets', '最多磁链'),
+];
+
+/// 排序下拉按钮：显示当前排序方式，点击弹出菜单切换。
+class SortSelector extends StatelessWidget {
+  final List<SortOption> options;
+  final String selected;
+  final ValueChanged<String> onChanged;
+
+  const SortSelector({
+    super.key,
+    required this.options,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final current = options.firstWhere(
+      (o) => o.value == selected,
+      orElse: () => options.first,
+    );
+    return PopupMenuButton<String>(
+      tooltip: '排序方式',
+      onSelected: onChanged,
+      itemBuilder: (context) => [
+        for (final o in options)
+          CheckedPopupMenuItem<String>(
+            value: o.value,
+            checked: o.value == selected,
+            child: Text(o.label),
+          ),
+      ],
+      child: Container(
+        height: 36,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          border: Border.all(color: Theme.of(context).dividerColor),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.sort, size: 16, color: Theme.of(context).hintColor),
+            const SizedBox(width: 4),
+            Text(
+              current.label,
+              style: TextStyle(fontSize: 13, color: Theme.of(context).hintColor),
+            ),
+            const SizedBox(width: 2),
+            Icon(Icons.expand_more,
+                size: 16, color: Theme.of(context).hintColor),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

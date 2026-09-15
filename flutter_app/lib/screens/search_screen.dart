@@ -23,6 +23,7 @@ class _SearchScreenState extends State<SearchScreen> {
   List<Movie> _movies = [];
   List<Actor> _actors = [];
   MovieViewMode _viewMode = MovieViewMode.grid;
+  String _sort = '';  // 当前排序方式
   bool _isLoading = false;
   bool _hasSearched = false;
   String? _error;
@@ -44,9 +45,11 @@ class _SearchScreenState extends State<SearchScreen> {
     super.dispose();
   }
 
-  Future<void> _search() async {
+  Future<void> _search({String? sort}) async {
     final query = _searchController.text.trim();
     if (query.isEmpty) return;
+
+    final currentSort = sort ?? _sort;
 
     setState(() {
       _isLoading = true;
@@ -55,9 +58,9 @@ class _SearchScreenState extends State<SearchScreen> {
     });
 
     try {
-      AppLogger.info('Searching: $query');
+      AppLogger.info('Searching: $query, sort=$currentSort');
       // 影片结果 + 演员档案并行请求；演员失败不影响影片结果展示
-      final movieFuture = _client.search(query, limit: 20);
+      final movieFuture = _client.search(query, limit: 20, sort: currentSort.isNotEmpty ? currentSort : null);
       final actorFuture = _client
           .search(query, limit: 12, scope: 'actor')
           .catchError((Object e) {
@@ -86,6 +89,7 @@ class _SearchScreenState extends State<SearchScreen> {
       setState(() {
         _movies = moviesList;
         _actors = actorMap.values.toList();
+        if (sort != null) _sort = sort;
         _isLoading = false;
       });
       AppLogger.info(
@@ -112,6 +116,15 @@ class _SearchScreenState extends State<SearchScreen> {
           ],
         ),
         actions: [
+          if (_hasSearched)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: SortSelector(
+                options: searchSortOptions,
+                selected: _sort,
+                onChanged: (s) => _search(sort: s),
+              ),
+            ),
           ViewModeToggle(
             mode: _viewMode,
             onChanged: (m) => setState(() => _viewMode = m),
