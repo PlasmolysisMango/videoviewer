@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
 import '../api/models.dart';
@@ -7,7 +8,7 @@ import '../widgets/player_control_bar.dart';
 import '../widgets/player_gestures.dart';
 
 /// 原生端 HLS 播放器（video_player / ExoPlayer 原生支持 HLS，可带 Referer 直连）。
-/// 支持清晰度切换（重初始化并保留进度）、倍速、手势（音量/亮度/进度）。
+/// 支持清晰度切换（重初始化并保留进度）、倍速、手势（音量/亮度/进度）、横屏全屏。
 class VideoPlayerScreen extends StatefulWidget {
   final List<VideoStream> streams;
   final String title;
@@ -36,6 +37,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   double _rate = 1.0;
   bool _loading = true;
   String? _error;
+  bool _isFullscreen = false;
 
   @override
   void initState() {
@@ -101,6 +103,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   void dispose() {
+    // 退出时恢复竖屏允许 + 显示状态栏
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _controller?.removeListener(_onPlayerTick);
     _controller?.dispose();
     super.dispose();
@@ -146,10 +155,85 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     _controller?.setVolume(v);
   }
 
+  /// 切换全屏：横屏全屏 + 隐藏状态栏
+  void _toggleFullscreen() {
+    setState(() => _isFullscreen = !_isFullscreen);
+    if (_isFullscreen) {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    } else {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = _controller;
     final initialized = c != null && c.value.isInitialized && _error == null;
+
+    // 全屏模式：无 AppBar，视频填满屏幕，控制栏浮层
+    if (_isFullscreen) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: _buildVideoArea(c, initialized),
+            ),
+            // 亮度遮罩
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(
+                  color: Colors.black
+                      .withOpacity((1 - _brightness).clamp(0.0, 0.9)),
+                ),
+              ),
+            ),
+            // 手势层
+            Positioned.fill(
+              child: PlayerGestureOverlay(
+                volume: _volume,
+                brightness: _brightness,
+                onVolumeChanged: _setVolume,
+                onBrightnessChanged: (v) => setState(() => _brightness = v),
+                onSeek: _seekRelative,
+                child: const SizedBox.expand(),
+              ),
+            ),
+            // 底部控制栏（浮层）
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: PlayerControlBar(
+                playing: _playing,
+                onPlayPause: _togglePlay,
+                position: _position,
+                duration: _duration,
+                onSeekTo: _seekTo,
+                qualityLabels: _streams.map((s) => s.label).toList(),
+                currentQuality: _current,
+                onQualityChanged: _switchQuality,
+                rate: _rate,
+                onRateChanged: _setRate,
+                isFullscreen: _isFullscreen,
+                onToggleFullscreen: _toggleFullscreen,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 普通模式：AppBar + 视频 + 底部控制栏
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -162,31 +246,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                if (initialized && c != null)
-                  Center(
-                    child: AspectRatio(
-                      aspectRatio: c.value.aspectRatio,
-                      child: VideoPlayer(c),
-                    ),
-                  )
-                else if (_loading)
+                _buildVideoArea(c, initialized),
+                if (_loading && !initialized)
                   const CircularProgressIndicator()
                 else if (_error != null)
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.error_outline,
-                          size: 64, color: Colors.red),
-                      const SizedBox(height: 16),
-                      Text('视频加载失败: $_error'),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _initController,
-                        child: const Text('重试'),
-                      ),
-                    ],
-                  ),
-                // 亮度遮罩（右半屏上滑变亮、下滑变暗）
+                  _buildErrorView(),
+                // 亮度遮罩
                 Positioned.fill(
                   child: IgnorePointer(
                     child: Container(
@@ -220,9 +285,50 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             onQualityChanged: _switchQuality,
             rate: _rate,
             onRateChanged: _setRate,
+            isFullscreen: _isFullscreen,
+            onToggleFullscreen: _toggleFullscreen,
           ),
         ],
       ),
+    );
+  }
+
+  /// 视频画面区：根据是否全屏选择 AspectRatio 或 FittedBox 填满。
+  Widget _buildVideoArea(VideoPlayerController? c, bool initialized) {
+    if (!initialized || c == null) return const SizedBox.shrink();
+    if (_isFullscreen) {
+      // 全屏：FittedBox cover 填满屏幕，保持比例裁切多余部分
+      return FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: c.value.size.width,
+          height: c.value.size.height,
+          child: VideoPlayer(c),
+        ),
+      );
+    }
+    // 普通模式：AspectRatio 保持比例
+    return Center(
+      child: AspectRatio(
+        aspectRatio: c.value.aspectRatio,
+        child: VideoPlayer(c),
+      ),
+    );
+  }
+
+  Widget _buildErrorView() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.error_outline, size: 64, color: Colors.red),
+        const SizedBox(height: 16),
+        Text('视频加载失败: $_error'),
+        const SizedBox(height: 16),
+        ElevatedButton(
+          onPressed: _initController,
+          child: const Text('重试'),
+        ),
+      ],
     );
   }
 }

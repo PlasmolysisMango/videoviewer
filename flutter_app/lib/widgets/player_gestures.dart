@@ -32,6 +32,7 @@ class PlayerGestureOverlay extends StatefulWidget {
 class _PlayerGestureOverlayState extends State<PlayerGestureOverlay> {
   bool _isVolumeSide = true;
   double _dragStartValue = 0;
+  double _accumVertical = 0; // 垂直拖动累积量
   double _accumSeconds = 0;
   bool _horizontal = false;
 
@@ -72,11 +73,12 @@ class _PlayerGestureOverlayState extends State<PlayerGestureOverlay> {
             _horizontal = false;
             _isVolumeSide = d.localPosition.dx < width / 2;
             _dragStartValue = _isVolumeSide ? widget.volume : widget.brightness;
+            _accumVertical = 0;
           },
           onVerticalDragUpdate: (d) {
             if (_horizontal) return;
-            final delta = -d.delta.dy / 200;
-            final v = (_dragStartValue + delta).clamp(0.0, 1.0);
+            _accumVertical += -d.delta.dy / 300;
+            final v = (_dragStartValue + _accumVertical).clamp(0.0, 1.0);
             if (_isVolumeSide) {
               widget.onVolumeChanged(v);
               _showHint(Icons.volume_up, '音量 ${(v * 100).round()}%');

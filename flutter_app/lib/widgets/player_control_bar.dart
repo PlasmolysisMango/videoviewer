@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// 播放器通用底部控制条：播放/暂停 + 进度条 + 时间 + 清晰度/倍速入口。
+/// 播放器通用底部控制条：播放/暂停 + 进度条 + 时间 + 清晰度/倍速/全屏入口。
 class PlayerControlBar extends StatelessWidget {
   final bool playing;
   final VoidCallback onPlayPause;
@@ -12,6 +12,8 @@ class PlayerControlBar extends StatelessWidget {
   final ValueChanged<int> onQualityChanged;
   final double rate;
   final ValueChanged<double> onRateChanged;
+  final bool isFullscreen;
+  final VoidCallback onToggleFullscreen;
 
   static const _rates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
@@ -27,6 +29,8 @@ class PlayerControlBar extends StatelessWidget {
     required this.onQualityChanged,
     required this.rate,
     required this.onRateChanged,
+    required this.isFullscreen,
+    required this.onToggleFullscreen,
   });
 
   String _fmt(Duration d) {
@@ -124,6 +128,15 @@ class PlayerControlBar extends StatelessWidget {
                   ),
                 ),
               ),
+            // 全屏按钮
+            IconButton(
+              icon: Icon(
+                isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                color: Colors.white,
+              ),
+              tooltip: isFullscreen ? '退出全屏' : '全屏',
+              onPressed: onToggleFullscreen,
+            ),
           ],
         ),
       ),

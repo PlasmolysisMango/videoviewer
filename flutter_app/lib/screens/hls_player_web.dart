@@ -47,6 +47,7 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
   bool _loading = true;
   String? _error;
   int _netRetries = 0; // hls.js 网络类致命错误的自动重试次数
+  bool _isFullscreen = false;
   final String _viewType =
       'hls-player-${DateTime.now().microsecondsSinceEpoch}';
 
@@ -225,6 +226,15 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
     if (_video != null) _video!.volume = v;
   }
 
+  void _toggleFullscreen() {
+    setState(() => _isFullscreen = !_isFullscreen);
+    if (_isFullscreen) {
+      html.document.documentElement?.requestFullscreen();
+    } else {
+      html.document.exitFullscreen();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -311,6 +321,8 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
             onQualityChanged: _switchQuality,
             rate: _rate,
             onRateChanged: _setRate,
+            isFullscreen: _isFullscreen,
+            onToggleFullscreen: _toggleFullscreen,
           ),
         ],
       ),
