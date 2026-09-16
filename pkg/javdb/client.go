@@ -185,17 +185,74 @@ func (c *Client) SearchActors(ctx context.Context, q Query) ([]Actor, error) {
 	if keyword == "" {
 		return nil, fmt.Errorf("%w: empty keyword", ErrInvalidQuery)
 	}
+	actors, err := c.searchActorsOnce(ctx, keyword, q)
+	// Approximate-search fallback: JavDB names actors in traditional/Japanese
+	// kanji, so simplified input ("清原美优") often returns nothing while the
+	// traditional form ("清原美優") hits. Retry once with the rewritten keyword;
+	// kana/latin keywords are returned unchanged by toTraditional and skipped.
+	if err == nil && len(actors) > 0 {
+		return actors, nil
+	}
+	if t := toTraditional(keyword); t != keyword {
+		if retry, rerr := c.searchActorsOnce(ctx, t, q); rerr == nil && len(retry) > 0 {
+			return retry, nil
+		}
+	}
+	return actors, err
+}
+
+// searchActorsOnce runs one fan-out round of actor search for a keyword.
+func (c *Client) searchActorsOnce(ctx context.Context, keyword string, q Query) ([]Actor, error) {
+	qq := q
+	qq.Keyword = keyword
 	v, err := call(ctx, c, "actor search "+keyword, func(ctx context.Context, b Backend) (any, error) {
 		s, ok := b.(ActorSearcher)
 		if !ok {
 			return nil, fmt.Errorf("%w: %s actor search", ErrUnsupported, b.Name())
 		}
-		return s.SearchActors(ctx, q)
+		return s.SearchActors(ctx, qq)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return v.([]Actor), nil
+}
+
+// SearchLists finds community lists ("影單") matching a keyword.
+func (c *Client) SearchLists(ctx context.Context, keyword string, p Page) ([]ListSummary, error) {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil, fmt.Errorf("%w: empty keyword", ErrInvalidQuery)
+	}
+	v, err := call(ctx, c, "list search "+keyword, func(ctx context.Context, b Backend) (any, error) {
+		s, ok := b.(ListSearcher)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s list search", ErrUnsupported, b.Name())
+		}
+		return s.SearchLists(ctx, keyword, p)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]ListSummary), nil
+}
+
+// ListMovies lists the movies of one community list.
+func (c *Client) ListMovies(ctx context.Context, listID string, p Page) (*SearchResult, error) {
+	if strings.TrimSpace(listID) == "" {
+		return nil, fmt.Errorf("%w: empty list id", ErrInvalidQuery)
+	}
+	v, err := call(ctx, c, "list movies "+listID, func(ctx context.Context, b Backend) (any, error) {
+		s, ok := b.(ListSearcher)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s list movies", ErrUnsupported, b.Name())
+		}
+		return s.ListMovies(ctx, listID, p)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*SearchResult), nil
 }
 
 // FindByCode looks up one movie by its exact video code ("SSIS-001").
@@ -610,6 +667,16 @@ func (c *Client) Login(ctx context.Context, cred Credentials) error {
 // app JWT. Either may be empty when anonymous. Both are secrets - keep them out
 // of logs and never commit them.
 func (c *Client) Session() (cookie, appToken string) { return c.t.session() }
+
+// SetWebCookie installs a web session cookie (e.g. imported from a browser
+// copy of the JavDB session) so login-walled web pages (/tags) become
+// accessible; the site's login form is captcha-protected, so no password
+// login exists for the web backend.
+func (c *Client) SetWebCookie(cookie string) {
+	if cookie != "" {
+		c.t.setCookie(cookie)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // backend fan-out

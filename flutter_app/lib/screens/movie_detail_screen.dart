@@ -576,14 +576,18 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ..._linkNames(movie['publisher']),
           ]),
           const SizedBox(height: 24),
-          // 播放/下载按钮默认展示；AV 流在后台解析，点击播放时如未就绪会现场补拉
-          // 片源站点选择（missav/jable/hohoj）+ MissAV 变体选择（无码/中字/原片）
+          // 片源/变体选择器单独一行：与按钮同排时手机窄屏会把按钮挤压到不可用
           Row(
             children: [
-              _buildSourceSelector(),
+              Flexible(child: _buildSourceSelector()),
               const SizedBox(width: 8),
-              _buildVariantSelector(),
-              const SizedBox(width: 12),
+              Flexible(child: _buildVariantSelector()),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // 播放/下载按钮独占一行等宽展示；AV 流在后台解析，点击播放时如未就绪会现场补拉
+          Row(
+            children: [
               Expanded(
                 child: FilledButton.icon(
                   onPressed: _playVideo,
@@ -596,7 +600,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                   ),
                 ),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: _downloadVideo,

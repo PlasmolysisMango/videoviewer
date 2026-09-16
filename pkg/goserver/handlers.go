@@ -208,6 +208,94 @@ func (s *Server) handleSeriesMovies(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleListSearch searches JavDB community lists ("影單"): /api/lists/search?q=&page=.
+// 走 web 后端的 /search?f=list 页面，匿名可用。
+func (s *Server) handleListSearch(w http.ResponseWriter, r *http.Request) {
+	keyword := strings.TrimSpace(r.URL.Query().Get("q"))
+	if keyword == "" {
+		writeError(w, http.StatusBadRequest, "query q required")
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	lists, err := s.javdb.SearchLists(r.Context(), keyword, javdb.Page{Page: page})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lists": lists})
+}
+
+// handleListMovies serves the movie list of one community list: /api/lists/{id}?page=.
+func (s *Server) handleListMovies(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[3] == "" {
+		writeError(w, http.StatusBadRequest, "list ID required")
+		return
+	}
+	id := parts[3]
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	results, err := s.javdb.ListMovies(r.Context(), id, javdb.Page{Page: page, Limit: limit})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	sort := javdb.SortBy(r.URL.Query().Get("sort"))
+	if sort != "" {
+		sortMovies(results.Movies, sort)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"movies":  results.Movies,
+		"page":    results.Current,
+		"maxPage": results.MaxPage,
+	})
+}
+
+// handleSubscriptions serves GET/POST /api/subscriptions.
+// GET 返回全部订阅，POST body {id,name,movies_count} 新增（重复忽略）。
+func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"subscriptions": listSubscriptions()})
+	case http.MethodPost:
+		var sub Subscription
+		if err := json.NewDecoder(r.Body).Decode(&sub); err != nil || strings.TrimSpace(sub.ID) == "" {
+			writeError(w, http.StatusBadRequest, "subscription body must contain id")
+			return
+		}
+		if err := addSubscription(sub); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"subscriptions": listSubscriptions()})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleSubscriptionDelete serves DELETE /api/subscriptions/{id}.
+func (s *Server) handleSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[3] == "" {
+		writeError(w, http.StatusBadRequest, "subscription ID required")
+		return
+	}
+	if err := removeSubscription(parts[3]); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": listSubscriptions()})
+}
+
 // sortMovies 对影片列表进行客户端排序。
 // 支持的排序：newest（最新）、oldest（最早）、highest（最高评分）、
 // most_magnets（最多磁链）、most_played（最多播放）、most_watched（最多人看）、
@@ -369,9 +457,81 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 每组附上 web 端筛选组号（/tags?c{N}={id}），供题材浏览使用。
+	groups := make([]map[string]any, 0, len(tags))
+	for _, g := range tags {
+		entry := map[string]any{
+			"category_id": g.CategoryID,
+			"name":        g.Name,
+			"options":     g.Options,
+		}
+		if web, ok := javdb.WebTagGroupID[g.CategoryID]; ok {
+			entry["web_group_id"] = web
+		}
+		groups = append(groups, entry)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tags": tags,
+		"tags": groups,
 	})
+}
+
+// handleGenre serves tag-scoped browsing: /api/genre?group=2&tag=1&page=.
+// 题材（角色/主題/服裝…）走 web 端的 /tags?c{group}={tag} 页面，该页需要
+// 网页版登录态；未导入 web cookie 时返回明确错误。
+func (s *Server) handleGenre(w http.ResponseWriter, r *http.Request) {
+	group := strings.TrimSpace(r.URL.Query().Get("group"))
+	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+	if group == "" || tag == "" {
+		writeError(w, http.StatusBadRequest, "group and tag required")
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	results, err := s.javdb.CategoryMovies(r.Context(), javdb.CategoryQuery{
+		TagIDs: map[string]string{group: tag},
+		Page:   javdb.Page{Page: page, Limit: limit},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	sort := javdb.SortBy(r.URL.Query().Get("sort"))
+	if sort != "" {
+		sortMovies(results.Movies, sort)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"movies":  results.Movies,
+		"page":    results.Current,
+		"maxPage": results.MaxPage,
+	})
+}
+
+// handleWebCookie imports a browser web-session cookie (POST /api/web-cookie,
+// body {"cookie": "..."}) to unlock login-walled web pages (/tags).
+// 验证码登录无法自动化，导入是唯一的网页版登录途径；同时持久化。
+func (s *Server) handleWebCookie(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var req struct {
+		Cookie string `json:"cookie"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Cookie) == "" {
+		writeError(w, http.StatusBadRequest, "cookie required")
+		return
+	}
+	s.javdb.SetWebCookie(req.Cookie)
+	cookie, token := s.javdb.Session()
+	saveSession(cookie, token)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleActor(w http.ResponseWriter, r *http.Request) {

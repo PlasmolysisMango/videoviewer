@@ -148,9 +148,16 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/ranking/", s.handleRanking)
 	mux.HandleFunc("GET /api/magnets/", s.handleMagnets)
 	mux.HandleFunc("GET /api/tags", s.handleTags)
+	mux.HandleFunc("GET /api/genre", s.handleGenre)
+	mux.HandleFunc("POST /api/web-cookie", s.handleWebCookie)
 	mux.HandleFunc("GET /api/actor/", s.handleActor)
 	mux.HandleFunc("GET /api/actor-movies/", s.handleActorMovies)
 mux.HandleFunc("GET /api/series-movies/", s.handleSeriesMovies)
+	mux.HandleFunc("GET /api/lists/search", s.handleListSearch)
+	mux.HandleFunc("GET /api/lists/", s.handleListMovies)
+	mux.HandleFunc("GET /api/subscriptions", s.handleSubscriptions)
+	mux.HandleFunc("POST /api/subscriptions", s.handleSubscriptions)
+	mux.HandleFunc("DELETE /api/subscriptions/", s.handleSubscriptionDelete)
 	// AV endpoints (MissAV/Jable/HohoJ for playback and download)
 	mux.HandleFunc("GET /api/av/sources", s.handleAVSources)
 	mux.HandleFunc("GET /api/av/search", s.handleAVSearch)
@@ -230,7 +237,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)

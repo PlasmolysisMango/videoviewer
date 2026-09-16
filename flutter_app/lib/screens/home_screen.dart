@@ -4,19 +4,22 @@ import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import '../providers/auth_provider.dart';
+import '../providers/subscription_provider.dart';
 import '../providers/theme_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
 import 'collection_screen.dart';
+import 'genre_screen.dart';
+import 'list_detail_screen.dart';
 import 'log_screen.dart';
 import 'movie_detail_screen.dart';
 import 'ranking_screen.dart';
 import 'search_screen.dart';
 
 /// 首页：影视风布局，背景跟随全局主题（默认白色）。
-/// 数据来自榜单接口（无独立"最新上架"数据源）：
-/// 热门推荐 Banner + 排行榜入口 + 热门影片海报栏 + 人气演员栏。
+/// 区块：热门推荐（订阅合集 + TOP250 随机池）、排行榜（热播/Top250/演员）、
+/// 题材分类（tag 分组浏览）、合集入口与已订阅合集（实时更新）。
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -25,10 +28,26 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  /// TOP250 合集切面（与合集页一致）：热门推荐从其中随机取样。
+  static const _top250Facets = <(String?, String?)>[
+    (null, null), // 总榜
+    ('2025', null),
+    ('2024', null),
+    ('2023', null),
+    ('2022', null),
+    ('2021', null),
+    (null, 'censored'),
+    (null, 'uncensored'),
+    (null, 'western'),
+    (null, 'fc2'),
+  ];
+
   late final JavDBClient _client;
   late final PageController _bannerController;
-  List<Movie> _hotMovies = [];
-  List<Actor> _hotActors = [];
+  List<Movie> _recMovies = [];
+  List<Map<String, dynamic>> _genreGroups = [];
+  int _genreGroupIndex = 0;
+  String? _genreError;
   bool _loading = true;
   String? _error;
   int _bannerPage = 0;
@@ -61,24 +80,15 @@ class _HomeScreenState extends State<HomeScreen> {
       _error = null;
     });
     try {
-      final results = await Future.wait(
-          [_client.getRanking('playback'), _client.getRanking('actors')]);
-      final movies = (results[0]['movies'] as List?)
-              ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
-              .toList() ??
-          const <Movie>[];
-      final actors = (results[1]['actors'] as List?)
-              ?.map((a) => Actor.fromJson(a as Map<String, dynamic>))
-              .toList() ??
-          const <Actor>[];
+      // 题材分组并行拉取但不阻塞主体：失败时仅降级题材区块。
+      _loadGenres();
+      final recMovies = await _recommendFromPool();
       if (!mounted) return;
       setState(() {
-        _hotMovies = movies;
-        _hotActors = actors;
+        _recMovies = recMovies;
         _loading = false;
       });
-      AppLogger.info(
-          'Home loaded: ${movies.length} movies, ${actors.length} actors');
+      AppLogger.info('Home loaded: ${recMovies.length} recommended');
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -86,6 +96,82 @@ class _HomeScreenState extends State<HomeScreen> {
         _loading = false;
       });
       AppLogger.error('Failed to load home data', e);
+    }
+  }
+
+  /// 题材分组（角色/主題/服裝…）：mobile API 匿名可拉；
+  /// 只保留有 web_group_id 映射的组，浏览具体题材影片才需要网页 Cookie。
+  void _loadGenres() {
+    _client.getTags().then((data) {
+      if (!mounted) return;
+      final groups = (data['tags'] as List?)
+              ?.map((e) => e as Map<String, dynamic>)
+              .where((g) =>
+                  ((g['web_group_id'] as String?) ?? '').isNotEmpty &&
+                  ((g['options'] as List?)?.isNotEmpty ?? false))
+              .toList() ??
+          const <Map<String, dynamic>>[];
+      setState(() {
+        _genreGroups = groups;
+        _genreGroupIndex = 0;
+        _genreError = groups.isEmpty ? '暂无题材数据' : null;
+      });
+    }).catchError((Object e) {
+      AppLogger.warning('Failed to load tags: $e');
+      if (mounted) setState(() => _genreError = e.toString());
+    });
+  }
+
+  /// 热门推荐池：随机 1 个订阅合集 + 1 个 TOP250 切面（无订阅时取
+  /// 2 个 TOP250 切面），合并去重洗牌，每次进入首页/下拉刷新都不同。
+  /// TOP250 需要登录，失败时回退热播榜，保证首页总有内容。
+  Future<List<Movie>> _recommendFromPool() async {
+    final provider = context.read<SubscriptionProvider>();
+    await provider.ensureLoaded();
+    final subs = [...provider.subscriptions]..shuffle();
+    final facets = [..._top250Facets]..shuffle();
+    try {
+      final requests = <Future<Map<String, dynamic>>>[
+        if (subs.isNotEmpty) ...[
+          _subMovies((subs.first['id'] as String?) ?? ''),
+          _client.getRanking('top250',
+              year: facets[0].$1, vtype: facets[0].$2, limit: 20),
+        ] else
+          for (final (year, vtype) in facets.take(2))
+            _client.getRanking('top250', year: year, vtype: vtype, limit: 20),
+      ];
+      final results = await Future.wait(requests);
+      final pool = <String, Movie>{};
+      for (final r in results) {
+        final ms = (r['movies'] as List?)
+                ?.map((m) => Movie.fromJson(m as Map<String, dynamic>)) ??
+            const <Movie>[];
+        for (final m in ms) {
+          pool[m.id] = m;
+        }
+      }
+      if (pool.isEmpty) {
+        throw Exception('empty recommend pool');
+      }
+      return pool.values.toList()..shuffle();
+    } catch (e) {
+      AppLogger.warning(
+          'Random pool recommendation failed, fallback to playback: $e');
+      final r = await _client.getRanking('playback');
+      return (r['movies'] as List?)
+              ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
+              .toList() ??
+          const <Movie>[];
+    }
+  }
+
+  /// 单个订阅合集的影片：失败返回空结构，不影响 TOP250 部分。
+  Future<Map<String, dynamic>> _subMovies(String listId) async {
+    try {
+      return await _client.getListMovies(listId, limit: 20);
+    } catch (e) {
+      AppLogger.warning('Failed to load subscribed list $listId: $e');
+      return const {'movies': []};
     }
   }
 
@@ -200,12 +286,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   _buildBanner(context),
                   _buildSectionHeader(context, '排行榜', Icons.emoji_events),
                   _buildRankingEntries(context),
+                  _buildSectionHeader(context, '题材分类', Icons.category),
+                  _buildGenreSection(context),
                   _buildSectionHeader(context, '合集', Icons.collections_bookmark),
                   _buildCollectionEntry(context),
-                  _buildSectionHeader(context, '热门影片', Icons.movie),
-                  _buildMovieRail(context),
-                  _buildSectionHeader(context, '人气演员', Icons.face),
-                  _buildActorRail(context),
+                  _buildSubscribedLists(context),
                 ],
               ),
             ),
@@ -262,7 +347,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // ------------------------------------------------------------------ Banner
 
   Widget _buildBanner(BuildContext context) {
-    final items = _hotMovies.take(5).toList();
+    final items = _recMovies.take(5).toList();
     if (items.isEmpty) {
       return Container(
         height: 160,
@@ -395,7 +480,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildRankingEntries(BuildContext context) {
     final entries = [
       ('热播榜', Icons.whatshot, Color(0xFFFF7043), 'playback'),
-      ('影片榜', Icons.videocam, Color(0xFF4FC3F7), 'movies'),
       ('Top250', Icons.emoji_events, Color(0xFFFFD54F), 'top250'),
       ('演员榜', Icons.face_retouching_natural, Color(0xFFE8506E), 'actors'),
     ];
@@ -483,132 +567,173 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ------------------------------------------------------------------ 横向海报栏
+  // ------------------------------------------------------------- 已订阅合集
 
-  Widget _buildMovieRail(BuildContext context) {
-    if (_hotMovies.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Center(
-            child: Text('暂无数据',
-                style: TextStyle(color: Theme.of(context).hintColor))),
-      );
-    }
-    return SizedBox(
-      height: 208,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _hotMovies.take(12).length,
-        separatorBuilder: (_, __) => const SizedBox(width: 12),
-        itemBuilder: (context, i) {
-          final movie = _hotMovies[i];
-          return _buildMovieCard(movie);
-        },
-      ),
+  /// 已订阅合集区块：数据来自 SubscriptionProvider（订阅/取消后实时更新），
+  /// 无订阅时隐藏。
+  Widget _buildSubscribedLists(BuildContext context) {
+    final subs = context.watch<SubscriptionProvider>().subscriptions;
+    if (subs.isEmpty) return const SizedBox.shrink();
+    return Column(
+      children: [
+        _buildSectionHeader(context, '已订阅合集', Icons.bookmarks),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            children: [
+              for (final s in subs) _buildSubscriptionCard(context, s),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
-  Widget _buildMovieCard(Movie movie) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: () => _openMovie(movie),
-      child: SizedBox(
-        width: 118,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: SizedBox(
-                width: 118,
-                height: 162,
-                child: movie.coverUrl != null
-                    ? Image.network(
-                        resolveImageUrl(movie.coverUrl!),
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                            color: _cardColor,
-                            child: const Icon(Icons.movie, size: 40)),
-                      )
-                    : Container(
-                        color: _cardColor,
-                        child: const Icon(Icons.movie, size: 40)),
+  Widget _buildSubscriptionCard(BuildContext context, Map<String, dynamic> s) {
+    final id = (s['id'] as String?) ?? '';
+    final name = (s['name'] as String?) ?? id;
+    final count = (s['movies_count'] as num?)?.toInt() ?? 0;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _push(
+          context,
+          ListDetailScreen(
+              listId: id, listName: name, moviesCount: count),
+        ),
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: _cardColor,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Theme.of(context).dividerColor),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFD54F).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.collections_bookmark,
+                    color: Color(0xFFFFD54F), size: 20),
               ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              movie.number,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-            if (movie.score != null)
-              Text('★ ${movie.score}',
-                  style: const TextStyle(
-                      fontSize: 11, color: Colors.orangeAccent)),
-          ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w600)),
+              ),
+              Text('$count 部',
+                  style: TextStyle(
+                      fontSize: 12, color: Theme.of(context).hintColor)),
+              const SizedBox(width: 4),
+              Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // ------------------------------------------------------------------ 演员栏
+  // ------------------------------------------------------------------ 题材分类
 
-  Widget _buildActorRail(BuildContext context) {
-    if (_hotActors.isEmpty) {
+  /// 题材分类区块：横向组切换（角色/主題/服裝…）+ 下方 tag 标签云，
+  /// 点击 tag 进入题材影片页；需要网页版 Cookie 时降级为导入提示卡片。
+  Widget _buildGenreSection(BuildContext context) {
+    if (_genreError != null) {
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Center(
-            child: Text('暂无数据',
-                style: TextStyle(color: Theme.of(context).hintColor))),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => showWebCookieImportDialog(context, _client),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: _cardColor,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Theme.of(context).dividerColor),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.lock_outline, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text('题材分类需要网页版登录态，点击导入 Cookie 解锁',
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).hintColor)),
+                ),
+                Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
+              ],
+            ),
+          ),
+        ),
       );
     }
-    return SizedBox(
-      height: 140,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _hotActors.take(12).length,
-        separatorBuilder: (_, __) => const SizedBox(width: 16),
-        itemBuilder: (context, i) {
-          final actor = _hotActors[i];
-          return _buildActorCard(context, actor);
-        },
-      ),
-    );
-  }
-
-  Widget _buildActorCard(BuildContext context, Actor actor) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: () => _push(context, SearchScreen(initialQuery: actor.name)),
-      child: SizedBox(
-        width: 72,
-        child: Column(
-          children: [
-            CircleAvatar(
-              radius: 32,
-              backgroundColor: _cardColor,
-              backgroundImage: actor.avatarUrl != null
-                  ? NetworkImage(resolveImageUrl(actor.avatarUrl!))
-                  : null,
-              onBackgroundImageError:
-                  actor.avatarUrl != null ? (_, __) {} : null,
-              child: actor.avatarUrl == null
-                  ? const Icon(Icons.person, size: 32)
-                  : null,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              actor.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12),
-            ),
-          ],
+    if (_genreGroups.isEmpty) return const SizedBox.shrink();
+    final index =
+        _genreGroupIndex < _genreGroups.length ? _genreGroupIndex : 0;
+    final group = _genreGroups[index];
+    final options = (group['options'] as List?) ?? const [];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 44,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: _genreGroups.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (context, i) {
+              final g = _genreGroups[i];
+              return Center(
+                child: ChoiceChip(
+                  label: Text((g['name'] as String?) ?? '',
+                      style: const TextStyle(fontSize: 12)),
+                  labelPadding:
+                      const EdgeInsets.symmetric(horizontal: 10),
+                  selected: i == index,
+                  visualDensity: VisualDensity.compact,
+                  onSelected: (_) => setState(() => _genreGroupIndex = i),
+                ),
+              );
+            },
+          ),
         ),
-      ),
+        const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final o in options)
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  label: Text(
+                      (o as Map<String, dynamic>)['name'] as String? ?? '',
+                      style: const TextStyle(fontSize: 12)),
+                  onPressed: () => _push(
+                    context,
+                    GenreScreen(
+                      groupId: (group['web_group_id'] as String?) ?? '',
+                      tagId: (o['id'] as String?) ?? '',
+                      title: (o['name'] as String?) ?? '',
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

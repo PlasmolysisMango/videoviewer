@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import 'api/client.dart';
 import 'providers/auth_provider.dart';
+import 'providers/subscription_provider.dart';
 import 'providers/theme_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
@@ -64,6 +65,9 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => ThemeProvider()..load()),
         ChangeNotifierProvider(
           create: (context) => AuthProvider(client)..loadSavedCredentials(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => SubscriptionProvider(client)..load(),
         ),
       ],
       child: Consumer<ThemeProvider>(

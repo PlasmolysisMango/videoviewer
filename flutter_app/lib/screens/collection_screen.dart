@@ -5,6 +5,7 @@ import '../api/models.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import 'list_search_screen.dart';
 
 /// 合集定义：一个 TOP250 榜单切面（年份或类型）。
 class CollectionSpec {
@@ -105,6 +106,12 @@ class _CollectionScreenState extends State<CollectionScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: '搜索合集',
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const ListSearchScreen())),
+          ),
           ViewModeToggle(
             mode: _viewMode,
             onChanged: (m) => setState(() => _viewMode = m),

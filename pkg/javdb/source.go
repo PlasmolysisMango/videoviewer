@@ -47,6 +47,13 @@ type ActorDetailer interface {
 	ActorMovies(ctx context.Context, actorID string, p Page) (*SearchResult, error)
 }
 
+// ListSearcher serves community lists ("影單"): keyword search and the
+// movie list of one list.
+type ListSearcher interface {
+	SearchLists(ctx context.Context, keyword string, p Page) ([]ListSummary, error)
+	ListMovies(ctx context.Context, listID string, p Page) (*SearchResult, error)
+}
+
 // ListPager serves category listings ("/censored", "/fc2", "/video_codes/XXX",
 // "/makers/XXX", tag filter pages).
 type ListPager interface {

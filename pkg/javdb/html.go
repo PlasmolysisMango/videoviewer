@@ -183,15 +183,21 @@ func webSearchFilter(q Query) string {
 	return string(q.Filter)
 }
 
-// SearchActors implements ActorSearcher. The site has no anonymous actor-name
-// search, but the category libraries (/actors/censored ...) are public: they
-// are paged and filtered client-side, so this is a best-effort lookup that the
-// Client prefers the API for.
+// SearchActors implements ActorSearcher.
+// The keyword search (/search?f=actor) works anonymously and covers every
+// actor including aliases (e.g. "清原美優" hits 清原みゆう), so it goes first;
+// the popular-actors directory (/actors/...) is only a best-effort fallback
+// for when the search page is unavailable. The Client prefers the API and
+// also retries with a simplified->traditional rewrite of the keyword.
 func (b *webBackend) SearchActors(ctx context.Context, q Query) ([]Actor, error) {
 	keyword := strings.TrimSpace(q.Keyword)
 	if keyword == "" {
 		return nil, fmt.Errorf("%w: empty keyword", ErrInvalidQuery)
 	}
+	if matches, err := b.searchActorsKeyword(ctx, keyword, NormalizeCode(keyword), q); err == nil && len(matches) > 0 {
+		return matches, nil
+	}
+	// Fallback: browse the public actor directory and filter client-side.
 	path := "/actors"
 	if q.Category != "" && q.Category != CategoryAll {
 		path = "/actors/" + string(q.Category)
@@ -227,6 +233,43 @@ func (b *webBackend) SearchActors(ctx context.Context, q Query) ([]Actor, error)
 			return nil, firstErr
 		}
 		return nil, fmt.Errorf("%w: actor %q on web", ErrEmptyResult, keyword)
+	}
+	return matches, nil
+}
+
+// searchActorsKeyword scrapes the anonymous actor keyword search
+// (/search?q={kw}&f=actor); result cards carry aliases in their title attr.
+func (b *webBackend) searchActorsKeyword(ctx context.Context, keyword, want string, q Query) ([]Actor, error) {
+	maxPages := maxInt(1, q.limitOrDefault(3))
+	var matches []Actor
+	var firstErr error
+	for page := q.pageOrDefault(1); page <= maxPages; page++ {
+		params := url.Values{"q": {keyword}, "f": {"actor"}}
+		if page > 1 {
+			params.Set("page", strconv.Itoa(page))
+		}
+		doc, _, err := b.getHTML(ctx, "/search", params)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
+		for _, a := range parseActorBoxes(doc) {
+			if actorMatches(a, want, keyword) {
+				a.Source = b.Name()
+				matches = append(matches, a)
+			}
+		}
+		if !pageHasNext(doc) {
+			break
+		}
+	}
+	if len(matches) == 0 {
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, fmt.Errorf("%w: actor %q via web search", ErrEmptyResult, keyword)
 	}
 	return matches, nil
 }
@@ -458,6 +501,70 @@ func (b *webBackend) ActorMovies(ctx context.Context, actorID string, p Page) (*
 	_, res.MaxPage = parsePagination(doc)
 	if len(res.Movies) == 0 {
 		return nil, fmt.Errorf("%w: filmography of actor %s", ErrEmptyResult, actorID)
+	}
+	return res, nil
+}
+
+// SearchLists implements ListSearcher by scraping the list tab of /search
+// (f=list), which works without login.
+func (b *webBackend) SearchLists(ctx context.Context, keyword string, p Page) ([]ListSummary, error) {
+	params := url.Values{"q": {keyword}, "f": {"list"}}
+	if page := p.pageOrDefault(1); page > 1 {
+		params.Set("page", strconv.Itoa(page))
+	}
+	doc, _, err := b.getHTML(ctx, "/search", params)
+	if err != nil {
+		return nil, err
+	}
+	var out []ListSummary
+	doc.Find("#lists a.box").Each(func(_ int, a *goquery.Selection) {
+		href, _ := a.Attr("href")
+		id := strings.TrimPrefix(href, "/lists/")
+		if id == "" || id == href {
+			return
+		}
+		name := strings.TrimSpace(a.Find("strong").First().Text())
+		if name == "" {
+			name = strings.TrimSpace(a.Text())
+		}
+		out = append(out, ListSummary{
+			ID:          id,
+			Name:        name,
+			MoviesCount: ParseInt(a.Find("span").First().Text()),
+			Href:        "/lists/" + id,
+			Source:      b.Name(),
+		})
+	})
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: lists %q", ErrEmptyResult, keyword)
+	}
+	return out, nil
+}
+
+// ListMovies implements ListSearcher by scraping /lists/{id}; the movie grid
+// reuses the shared list parser.
+func (b *webBackend) ListMovies(ctx context.Context, listID string, p Page) (*SearchResult, error) {
+	params := url.Values{}
+	if page := p.pageOrDefault(1); page > 1 {
+		params.Set("page", strconv.Itoa(page))
+	}
+	doc, _, err := b.getHTML(ctx, "/lists/"+url.PathEscape(listID), params)
+	if err != nil {
+		return nil, err
+	}
+	page := p.pageOrDefault(1)
+	res := &SearchResult{
+		Query:   Query{Keyword: listID, Scope: ScopeMovie, Page: p},
+		Movies:  parseMovieList(doc, page),
+		Current: page,
+		Source:  b.Name(),
+	}
+	for i := range res.Movies {
+		res.Movies[i].Source = b.Name()
+	}
+	_, res.MaxPage = parsePagination(doc)
+	if len(res.Movies) == 0 {
+		return nil, fmt.Errorf("%w: movies of list %s", ErrEmptyResult, listID)
 	}
 	return res, nil
 }

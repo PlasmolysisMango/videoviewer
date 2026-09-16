@@ -168,6 +168,16 @@ type Link struct {
 	Kind string `json:"kind,omitempty"`
 }
 
+// ListSummary is a community list ("影單") card from a list search.
+type ListSummary struct {
+	// ID is the site identifier ("OBNxy") used to fetch the list contents.
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	MoviesCount int    `json:"movies_count,omitempty"`
+	Href        string `json:"href,omitempty"`
+	Source      string `json:"-"`
+}
+
 // String implements fmt.Stringer.
 func (l Link) String() string { return l.Name }
 
@@ -292,6 +302,21 @@ type TagGroup struct {
 	CategoryID string      `json:"category_id"`
 	Name       string      `json:"name"`
 	Options    []TagOption `json:"options,omitempty"`
+}
+
+// WebTagGroupID maps the mobile-API tag group category ids ("role") to the
+// web filter-group numbers used by /tags?c{N}={id} browsing URLs.
+// c2 (role), c5 (behavior) and c7 (category) were verified against live
+// movie pages; the rest follow the site's filter-group order.
+var WebTagGroupID = map[string]string{
+	"role":        "2",
+	"subject":     "3",
+	"cloth":       "4",
+	"behavior":    "5",
+	"body":        "6",
+	"category":    "7",
+	"play_method": "8",
+	"duration":    "9",
 }
 
 // Tag is a playability/attribute flag exposed by the API (可播放, 含字幕 ...).

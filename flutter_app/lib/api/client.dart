@@ -110,6 +110,97 @@ class JavDBClient {
     }
   }
 
+  /// 搜索 JavDB 社区影单（合集）：/api/lists/search?q=
+  Future<List<Map<String, dynamic>>> searchLists(String query,
+      {int page = 1}) async {
+    final uri = Uri.parse('$baseUrl/api/lists/search').replace(queryParameters: {
+      'q': query,
+      'page': page.toString(),
+    });
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['lists'] as List?)
+              ?.map((e) => e as Map<String, dynamic>)
+              .toList() ??
+          const <Map<String, dynamic>>[];
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Search lists failed');
+    }
+  }
+
+  /// 获取一个影单的影片列表：/api/lists/{id}
+  /// sort 可选：newest / oldest / highest / most_magnets 等（客户端排序）。
+  Future<Map<String, dynamic>> getListMovies(String listId,
+      {int page = 1, int limit = 20, String? sort}) async {
+    final params = <String, String>{
+      'page': page.toString(),
+      'limit': limit.toString(),
+    };
+    if (sort != null && sort.isNotEmpty) {
+      params['sort'] = sort;
+    }
+    final uri = Uri.parse('$baseUrl/api/lists/$listId')
+        .replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Get list movies failed');
+    }
+  }
+
+  /// 获取已订阅合集列表：/api/subscriptions
+  Future<List<Map<String, dynamic>>> getSubscriptions() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/subscriptions'),
+        headers: _headers);
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['subscriptions'] as List?)
+              ?.map((e) => e as Map<String, dynamic>)
+              .toList() ??
+          const <Map<String, dynamic>>[];
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Get subscriptions failed');
+    }
+  }
+
+  /// 订阅合集（重复订阅幂等）：POST /api/subscriptions
+  Future<void> subscribeList(String listId, String name,
+      {int moviesCount = 0}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/subscriptions'),
+      headers: _headers,
+      body: jsonEncode({
+        'id': listId,
+        'name': name,
+        'movies_count': moviesCount,
+      }),
+    );
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Subscribe failed');
+    }
+  }
+
+  /// 取消订阅合集：DELETE /api/subscriptions/{id}
+  Future<void> unsubscribeList(String listId) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/subscriptions/$listId'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Unsubscribe failed');
+    }
+  }
+
   Future<Map<String, dynamic>> getMagnets(String movieId) async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/magnets/$movieId'),
@@ -138,6 +229,43 @@ class JavDBClient {
     } else {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'Get tags failed');
+    }
+  }
+
+  /// 题材（tag）影片浏览：/api/genre?group={web_group_id}&tag={tag_id}。
+  /// 该能力走 JavDB 网页版 /tags 页面，需要已导入网页版 Cookie。
+  Future<Map<String, dynamic>> getGenreMovies(String group, String tag,
+      {int page = 1, int limit = 20, String? sort}) async {
+    final params = <String, String>{
+      'group': group,
+      'tag': tag,
+      'page': page.toString(),
+      'limit': limit.toString(),
+    };
+    if (sort != null && sort.isNotEmpty) {
+      params['sort'] = sort;
+    }
+    final uri = Uri.parse('$baseUrl/api/genre').replace(queryParameters: params);
+    final response = await http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Get genre movies failed');
+    }
+  }
+
+  /// 导入网页版登录 Cookie（解锁题材浏览等登录墙页面）。
+  Future<void> setWebCookie(String cookie) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/web-cookie'),
+      headers: _headers,
+      body: jsonEncode({'cookie': cookie}),
+    );
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Set web cookie failed');
     }
   }
 
