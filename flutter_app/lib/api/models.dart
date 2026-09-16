@@ -5,6 +5,9 @@ class Movie {
   final String? originTitle;
   final String? coverUrl;
   final String? thumbUrl;
+  /// 竖版海报（2:3，来自 /thumbs/ 目录）。app API 的 cover/thumb 是横版剧照，
+  /// 用竖版容器展示会裁剪成中间竖条；需要竖版展示时优先用 posterUrl。
+  final String? posterUrl;
   final String? releaseDate;
   final int? duration;
   final int? magnetsCount;
@@ -24,6 +27,7 @@ class Movie {
     this.originTitle,
     this.coverUrl,
     this.thumbUrl,
+    this.posterUrl,
     this.releaseDate,
     this.duration,
     this.magnetsCount,
@@ -44,6 +48,7 @@ class Movie {
       originTitle: json['origin_title'] as String?,
       coverUrl: json['cover_url'] as String?,
       thumbUrl: json['thumb_url'] as String?,
+      posterUrl: json['poster_url'] as String?,
       releaseDate: json['release_date'] as String?,
       duration: json['duration'] as int?,
       magnetsCount: json['magnets_count'] as int?,
@@ -57,6 +62,29 @@ class Movie {
     );
   }
 
+  /// 复制并替换部分字段（渐进补演员时用）。
+  Movie copyWith({List<String>? actors}) {
+    return Movie(
+      id: id,
+      number: number,
+      title: title,
+      originTitle: originTitle,
+      coverUrl: coverUrl,
+      thumbUrl: thumbUrl,
+      posterUrl: posterUrl,
+      releaseDate: releaseDate,
+      duration: duration,
+      magnetsCount: magnetsCount,
+      hasCnsub: hasCnsub,
+      canPlay: canPlay,
+      score: score,
+      ranking: ranking,
+      href: href,
+      previewImages: previewImages,
+      actors: actors ?? this.actors,
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -65,6 +93,7 @@ class Movie {
       'origin_title': originTitle,
       'cover_url': coverUrl,
       'thumb_url': thumbUrl,
+      'poster_url': posterUrl,
       'release_date': releaseDate,
       'duration': duration,
       'magnets_count': magnetsCount,

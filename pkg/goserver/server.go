@@ -70,6 +70,18 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Cookie != "" {
 		opts = append(opts, javdb.WithCookie(cfg.Cookie))
 	}
+	// 配置未显式给凭据时，恢复上次会话的登录态（重启不丢登录）。
+	if cfg.Cookie == "" && cfg.Token == "" {
+		if cookie, appToken := loadSession(); cookie != "" || appToken != "" {
+			log.Printf("goserver: restoring persisted JavDB session")
+			if cookie != "" {
+				opts = append(opts, javdb.WithCookie(cookie))
+			}
+			if appToken != "" {
+				opts = append(opts, javdb.WithAppToken(appToken))
+			}
+		}
+	}
 	if cfg.Proxy != "" {
 		opts = append(opts, javdb.WithProxy(cfg.Proxy))
 	}
@@ -138,6 +150,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/tags", s.handleTags)
 	mux.HandleFunc("GET /api/actor/", s.handleActor)
 	mux.HandleFunc("GET /api/actor-movies/", s.handleActorMovies)
+mux.HandleFunc("GET /api/series-movies/", s.handleSeriesMovies)
 	// AV endpoints (MissAV/Jable/HohoJ for playback and download)
 	mux.HandleFunc("GET /api/av/sources", s.handleAVSources)
 	mux.HandleFunc("GET /api/av/search", s.handleAVSearch)

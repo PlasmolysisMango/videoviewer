@@ -131,7 +131,12 @@ func TestAPISearchParameterTranslation(t *testing.T) {
 	_, err = c.SearchActors(ctx, Query{Keyword: "楓花戀", Category: CategoryUncensored})
 	requireNoErr(t, err)
 	req := st.lastRequest(t, "/api/v1/actors")
-	if req.Query.Get("search") != "楓花戀" || req.Query.Get("type") != "1" {
+	// The API ignores the search param, so it is never sent; matching is
+	// done client-side over the fetched candidates.
+	if req.Query.Get("search") != "" {
+		t.Fatalf("actor search must not send search param: %v", req.Query)
+	}
+	if req.Query.Get("type") != "1" {
 		t.Fatalf("actor search: %v", req.Query)
 	}
 	if got := req.Header.Get("jdsignature"); got == "" {

@@ -118,7 +118,9 @@ func parseMovieItem(item *goquery.Selection, pageNum int) (Movie, bool) {
 		}
 	}
 
-	// Cover image (lazy loading keeps the URL in data-src).
+	// Cover image (lazy loading keeps the URL in data-src). Both web and app
+	// listings serve wide 16:9 stills from /covers/; the vertical 2:3 card art
+	// lives under /thumbs/ and is derived via posterFromCover.
 	cover := a.Find("div.cover").First()
 	img := cover.Find("img").First()
 	if img.Length() > 0 {
@@ -128,6 +130,7 @@ func parseMovieItem(item *goquery.Selection, pageNum int) (Movie, bool) {
 		}
 		m.CoverURL = FixImageURL(src)
 		m.ThumbURL = m.CoverURL
+		m.PosterURL = posterFromCover(m.CoverURL)
 	}
 	if cover.Is(".tag-can-play") || cover.Find(".tag-can-play").Length() > 0 {
 		m.CanPlay = true

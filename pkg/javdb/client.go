@@ -514,9 +514,15 @@ func (c *Client) ActorMovies(ctx context.Context, idOrName string, p Page) (*Sea
 	if !looksLikeID(idOrName) {
 		a, err := c.Actor(ctx, idOrName)
 		if err != nil {
-			return nil, err
+			// Short mixed tokens ("83V") read as neither id nor code and fail
+			// name resolution; keep the raw token and let the web backend try
+			// it as an actor id directly.
+			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrEmptyResult) {
+				return nil, err
+			}
+		} else {
+			id = a.ID
 		}
-		id = a.ID
 	}
 	v, err := call(ctx, c, "actor movies "+id, func(ctx context.Context, b Backend) (any, error) {
 		ad, ok := b.(ActorDetailer)

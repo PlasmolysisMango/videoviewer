@@ -8,6 +8,7 @@ import '../providers/theme_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
+import 'collection_screen.dart';
 import 'log_screen.dart';
 import 'movie_detail_screen.dart';
 import 'ranking_screen.dart';
@@ -199,6 +200,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   _buildBanner(context),
                   _buildSectionHeader(context, '排行榜', Icons.emoji_events),
                   _buildRankingEntries(context),
+                  _buildSectionHeader(context, '合集', Icons.collections_bookmark),
+                  _buildCollectionEntry(context),
                   _buildSectionHeader(context, '热门影片', Icons.movie),
                   _buildMovieRail(context),
                   _buildSectionHeader(context, '人气演员', Icons.face),
@@ -426,6 +429,56 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           );
         }).toList(),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------ 合集入口
+
+  /// 合集入口卡片：进入合集页（TOP250 总榜/年度榜/类型榜）。
+  Widget _buildCollectionEntry(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _push(context, const CollectionScreen()),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: _cardColor,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Theme.of(context).dividerColor),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFD54F).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.collections_bookmark,
+                    color: Color(0xFFFFD54F), size: 24),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('TOP250 合集',
+                        style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
+                    SizedBox(height: 2),
+                    Text('总榜 · 年度榜 · 有码 / 无码 / 欧美 / FC2',
+                        style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
+            ],
+          ),
+        ),
       ),
     );
   }

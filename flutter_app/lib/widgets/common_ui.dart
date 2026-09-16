@@ -134,7 +134,8 @@ class MovieCompactTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cover = movie.thumbUrl ?? movie.coverUrl;
+    // 小图模式是竖版容器，优先用竖版海报，避免横版剧照被裁成中间竖条。
+    final cover = movie.posterUrl ?? movie.thumbUrl ?? movie.coverUrl;
     final actors = movie.actors;
     final actorText =
         (actors != null && actors.isNotEmpty) ? actors.join(' / ') : movie.number;
@@ -250,7 +251,8 @@ class RankingMovieTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cover = movie.thumbUrl ?? movie.coverUrl;
+    // 竖版缩略图：优先竖版海报，避免横版剧照被裁剪。
+    final cover = movie.posterUrl ?? movie.thumbUrl ?? movie.coverUrl;
     return InkWell(
       borderRadius: BorderRadius.circular(14),
       onTap: () => pushMovieDetail(context, movie),
@@ -417,7 +419,8 @@ class MovieGridCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cover = movie.coverUrl ?? movie.thumbUrl;
+    // 网格卡片为竖版海报比例：优先竖版海报（横版图会只显示中间竖条）。
+    final cover = movie.posterUrl ?? movie.coverUrl ?? movie.thumbUrl;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: () => pushMovieDetail(context, movie),
@@ -533,6 +536,8 @@ class SortOption {
 /// 搜索结果页可用的排序选项。
 const searchSortOptions = [
   SortOption('', '相关度'),
+  SortOption('most_played', '最多播放'),
+  SortOption('most_comments', '最多评论'),
   SortOption('newest', '最新发行'),
   SortOption('oldest', '最早发行'),
   SortOption('highest', '最高评分'),
@@ -543,6 +548,8 @@ const searchSortOptions = [
 /// 演员作品页可用的排序选项（后端为客户端排序，无“相关度”）。
 const actorSortOptions = [
   SortOption('', '默认'),
+  SortOption('most_played', '最多播放'),
+  SortOption('most_comments', '最多评论'),
   SortOption('newest', '最新发行'),
   SortOption('oldest', '最早发行'),
   SortOption('highest', '最高评分'),

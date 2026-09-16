@@ -59,11 +59,12 @@ class JavDBClient {
     }
   }
 
-  Future<Map<String, dynamic>> getMovie(String id) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/api/movie/$id'),
-      headers: _headers,
-    );
+  /// 获取影片详情。cast=true 仅拉详情（跳过磁链查询），
+  /// 供搜索结果渐进补演员使用，速度快得多。
+  Future<Map<String, dynamic>> getMovie(String id, {bool cast = false}) async {
+    final uri = Uri.parse('$baseUrl/api/movie/$id').replace(
+        queryParameters: cast ? {'cast': '1'} : null);
+    final response = await http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -74,7 +75,12 @@ class JavDBClient {
   }
 
   Future<Map<String, dynamic>> getRanking(String kind,
-      {String? category, String? period, int page = 1, int limit = 20}) async {
+      {String? category,
+      String? period,
+      String? year,
+      String? vtype,
+      int page = 1,
+      int limit = 20}) async {
     final params = <String, String>{
       'page': page.toString(),
       'limit': limit.toString(),
@@ -84,6 +90,12 @@ class JavDBClient {
     }
     if (period != null && period.isNotEmpty) {
       params['period'] = period;
+    }
+    if (year != null && year.isNotEmpty) {
+      params['year'] = year;
+    }
+    if (vtype != null && vtype.isNotEmpty) {
+      params['vtype'] = vtype;
     }
 
     final uri = Uri.parse('$baseUrl/api/ranking/$kind')

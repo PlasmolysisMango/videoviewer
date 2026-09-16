@@ -84,6 +84,9 @@ const (
 	SortMostMagnet  SortBy = "most_magnets"
 	SortMostPlayed  SortBy = "most_played"
 	SortMostWatched SortBy = "most_watched"
+	// SortMostComments orders by comment activity. The web site has no such
+	// server-side sort; the aggregator falls back to rating count locally.
+	SortMostComments SortBy = "most_comments"
 )
 
 // FilterBy narrows a search to a subset of entries.
@@ -201,6 +204,10 @@ type Movie struct {
 	OriginTitle  string   `json:"origin_title,omitempty"`
 	CoverURL     string   `json:"cover_url,omitempty"`
 	ThumbURL     string   `json:"thumb_url,omitempty"`
+	// PosterURL is the vertical (2:3) cover art used by list cards. The app API
+	// serves wide 16:9 stills as cover/thumb, so callers should prefer this
+	// field for posters and fall back to CoverURL/ThumbURL.
+	PosterURL    string   `json:"poster_url,omitempty"`
 	ReleaseDate  string   `json:"release_date,omitempty"`
 	Duration     int      `json:"duration,omitempty"`
 	Score        float64  `json:"score,omitempty"`

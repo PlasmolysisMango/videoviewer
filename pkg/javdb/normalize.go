@@ -267,6 +267,23 @@ func FixImageURL(u string) string {
 	return "https://c0.jdbstatic.com" + u[i+len("/rhe951l4q"):]
 }
 
+// posterFromCover derives the vertical (2:3) poster URL from a wide cover
+// still. The app API serves /covers/ and /small_covers/ (both 16:9, and the
+// small variant 403s without a Referer), while the same hash is also hosted
+// under /thumbs/ as the vertical card art the web listing shows
+// (covers/9d/9DGB5X.jpg -> thumbs/9d/9DGB5X.jpg).
+func posterFromCover(u string) string {
+	if u == "" {
+		return ""
+	}
+	for _, dir := range []string{"/covers/", "/small_covers/"} {
+		if i := strings.LastIndex(u, dir); i >= 0 {
+			return u[:i] + "/thumbs/" + u[i+len(dir):]
+		}
+	}
+	return ""
+}
+
 // NormalizeHref turns an href into a site-relative path ("/actors/21Jp").
 // Non-site URLs (magnet:, https://external) are returned unchanged / stripped.
 func NormalizeHref(href string) string {

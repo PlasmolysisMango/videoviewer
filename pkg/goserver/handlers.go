@@ -42,7 +42,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, token := s.javdb.Session()
+	cookie, token := s.javdb.Session()
+	// 持久化会话，后端重启后无需重新登录（配置显式传凭据时以配置为准）。
+	saveSession(cookie, token)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"token":    token,
 		"username": req.Username,
@@ -169,9 +171,48 @@ func (s *Server) handleActorMovies(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleSeriesMovies serves the movie list of one series (合集): /api/series-movies/{id}.
+// 复用 CategoryMovies 的系列页抓取（/series/{id}），支持分页与客户端排序。
+func (s *Server) handleSeriesMovies(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[3] == "" {
+		writeError(w, http.StatusBadRequest, "series ID required")
+		return
+	}
+	id := parts[3]
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	results, err := s.javdb.CategoryMovies(r.Context(), javdb.CategoryQuery{
+		Series: id,
+		Page:   javdb.Page{Page: page, Limit: limit},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 客户端排序：后端 HTML 抓取无服务端排序能力，在此对返回结果排序。
+	sort := javdb.SortBy(r.URL.Query().Get("sort"))
+	if sort != "" {
+		sortMovies(results.Movies, sort)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"movies":  results.Movies,
+		"page":    results.Current,
+		"maxPage": results.MaxPage,
+	})
+}
+
 // sortMovies 对影片列表进行客户端排序。
 // 支持的排序：newest（最新）、oldest（最早）、highest（最高评分）、
-// most_magnets（最多磁链）、most_played（最多播放）、most_watched（最多人看）。
+// most_magnets（最多磁链）、most_played（最多播放）、most_watched（最多人看）、
+// most_comments（最多评论）。
+// 播放/观看数不在列表字段中，播放类回退评分、评论类回退评分人数。
 func sortMovies(movies []javdb.Movie, sort javdb.SortBy) {
 	if len(movies) == 0 {
 		return
@@ -194,6 +235,9 @@ func sortMovies(movies []javdb.Movie, sort javdb.SortBy) {
 			case javdb.SortMostPlayed, javdb.SortMostWatched:
 				// 无直接播放/观看数字段，回退到评分
 				swap = movies[j].Score > movies[i].Score
+			case javdb.SortMostComments:
+				// 无独立评论数字段，回退到评分人数
+				swap = movies[j].Ratings > movies[i].Ratings
 			}
 			if swap {
 				movies[i], movies[j] = movies[j], movies[i]
@@ -210,6 +254,17 @@ func (s *Server) handleMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[3]
+
+	// cast=1：仅拉取影片详情（供搜索结果补演员用），跳过磁链查询减半上游请求。
+	if r.URL.Query().Get("cast") == "1" {
+		movie, err := s.javdb.Movie(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"movie": movie})
+		return
+	}
 
 	movie, err := s.javdb.Movie(r.Context(), id)
 	if err != nil {
@@ -255,6 +310,22 @@ func (s *Server) handleRanking(w http.ResponseWriter, r *http.Request) {
 		Category: category,
 		Period:   period,
 		Page:     javdb.Page{Page: page, Limit: limit},
+	}
+	// TOP250 切面（合集）：year=2025 -> 2025TOP250，vtype=censored -> 有码TOP250。
+	if kind == javdb.RankingTop250 || kind == "" {
+		if year, yerr := strconv.Atoi(r.URL.Query().Get("year")); yerr == nil && year > 0 {
+			q.Slice = javdb.Top250OfYear(year)
+		}
+		switch javdb.Category(r.URL.Query().Get("vtype")) {
+		case javdb.CategoryCensored:
+			q.Slice = javdb.Top250Censored
+		case javdb.CategoryUncensored:
+			q.Slice = javdb.Top250Uncensored
+		case javdb.CategoryWestern:
+			q.Slice = javdb.Top250Western
+		case javdb.CategoryFC2:
+			q.Slice = javdb.Top250FC2
+		}
 	}
 
 	ranking, err := s.javdb.Ranking(r.Context(), q)

@@ -103,6 +103,11 @@ func (b *webBackend) SearchMovies(ctx context.Context, q Query) (*SearchResult, 
 	params := url.Values{}
 	params.Set("q", keyword)
 	params.Set("f", webSearchFilter(q))
+	// The anonymous site only exposes a release-date toggle (sb=1); the other
+	// sorts are app-API-only and are therefore applied client-side upstream.
+	if q.Sort == SortNewest || q.Sort == SortOldest {
+		params.Set("sb", "1")
+	}
 	if q.FromRecent {
 		params.Set("from_recent", "1")
 	}
@@ -232,7 +237,9 @@ func pageHasNext(doc *goquery.Document) bool {
 }
 
 func actorMatches(a Actor, normalized, raw string) bool {
-	for _, cand := range []string{a.Name, a.NameTraditional, a.OtherName} {
+	// a.ID lets an id-miss fallback (Actor by id -> name search) still find
+	// the actor when the id itself is what was searched.
+	for _, cand := range []string{a.ID, a.Name, a.NameTraditional, a.OtherName} {
 		if cand == "" {
 			continue
 		}
@@ -423,9 +430,36 @@ func webCategoryURL(q CategoryQuery) (string, url.Values) {
 	}
 }
 
-// ActorMovies implements ActorDetailer (login-gated on the anonymous site).
+// ActorMovies implements ActorDetailer. Anonymous /actors/{id} pages are
+// publicly browsable, but the t=d torrent filter redirects to the login wall,
+// so it is only requested when a web session cookie is configured.
 func (b *webBackend) ActorMovies(ctx context.Context, actorID string, p Page) (*SearchResult, error) {
-	return b.CategoryMovies(ctx, CategoryQuery{ActorID: actorID, Page: p})
+	params := url.Values{}
+	if cookie, _ := b.t.session(); cookie != "" {
+		params.Set("t", "d") // logged-in site default: only entries with torrents
+	}
+	page := p.pageOrDefault(1)
+	if page > 1 {
+		params.Set("page", strconv.Itoa(page))
+	}
+	doc, _, err := b.getHTML(ctx, "/actors/"+url.PathEscape(actorID), params)
+	if err != nil {
+		return nil, err
+	}
+	res := &SearchResult{
+		Query:   Query{Keyword: actorID, Scope: ScopeMovie, Page: p},
+		Movies:  parseMovieList(doc, page),
+		Current: page,
+		Source:  b.Name(),
+	}
+	for i := range res.Movies {
+		res.Movies[i].Source = b.Name()
+	}
+	_, res.MaxPage = parsePagination(doc)
+	if len(res.Movies) == 0 {
+		return nil, fmt.Errorf("%w: filmography of actor %s", ErrEmptyResult, actorID)
+	}
+	return res, nil
 }
 
 // Actor implements ActorDetailer by scraping /actors/{id}.

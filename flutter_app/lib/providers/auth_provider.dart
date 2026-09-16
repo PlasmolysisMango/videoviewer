@@ -16,27 +16,30 @@ class AuthProvider with ChangeNotifier {
   String? get error => _error;
   bool get isLoggedIn => _client.token != null;
 
-  /// 启动时加载已保存的凭据，如果有保存的账号密码则自动登录。
+  /// 启动时加载已保存的凭据。
+  /// 有保存的账号密码时总是重新登录刷新会话：旧 token 可能因后端重启
+  /// 或过期而失效，直接恢复会导致后续接口报 “login required”。
   Future<void> loadSavedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('jwt_token');
     final username = prefs.getString('username');
 
-    // 有有效 token 直接恢复会话
-    if (token != null && token.isNotEmpty && username != null) {
-      _client.setToken(token);
-      _username = username;
-      notifyListeners();
-      return;
-    }
-
-    // 无 token 但有保存的账号密码 → 自动登录
+    // 有保存的账号密码 → 自动登录（刷新会话）
     final savedUser = prefs.getString('saved_user');
     final savedPass = prefs.getString('saved_pass');
     if (savedUser != null && savedUser.isNotEmpty &&
         savedPass != null && savedPass.isNotEmpty) {
       AppLogger.info('Auto-login with saved credentials for: $savedUser');
-      await login(savedUser, savedPass, saveCredentials: false);
+      final ok = await login(savedUser, savedPass, saveCredentials: false);
+      if (ok) return;
+      AppLogger.warning('Auto-login failed; falling back to saved token');
+    }
+
+    // 自动登录不可用/失败时回退到旧 token（保持界面登录态）
+    final token = prefs.getString('jwt_token');
+    if (token != null && token.isNotEmpty && username != null) {
+      _client.setToken(token);
+      _username = username;
+      notifyListeners();
     }
   }
 

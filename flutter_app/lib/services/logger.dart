@@ -1,7 +1,5 @@
 import 'dart:developer' as developer;
 
-import 'package:flutter/foundation.dart';
-
 /// Simple logging service for debugging
 class AppLogger {
   AppLogger._();

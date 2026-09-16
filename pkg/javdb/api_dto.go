@@ -81,6 +81,7 @@ func (m apiMovie) toMovie(site string) Movie {
 		OriginTitle:  m.OriginTitle,
 		CoverURL:     FixImageURL(m.CoverURL),
 		ThumbURL:     FixImageURL(m.ThumbURL),
+		PosterURL:    posterFromCover(FixImageURL(m.CoverURL)),
 		ReleaseDate:  rawToString(m.ReleaseDate),
 		Duration:     int(ParseFloat(rawToString(m.Duration))),
 		Score:        ParseFloat(rawToString(m.Score)),

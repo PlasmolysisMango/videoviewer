@@ -24,6 +24,7 @@ class _SearchScreenState extends State<SearchScreen> {
   List<Actor> _actors = [];
   MovieViewMode _viewMode = MovieViewMode.grid;
   String _sort = '';  // 当前排序方式
+  int _searchSeq = 0; // 搜索序号：新一轮搜索发起后中止旧的补演员填充
   bool _isLoading = false;
   bool _hasSearched = false;
   String? _error;
@@ -50,6 +51,7 @@ class _SearchScreenState extends State<SearchScreen> {
     if (query.isEmpty) return;
 
     final currentSort = sort ?? _sort;
+    final seq = ++_searchSeq;
 
     setState(() {
       _isLoading = true;
@@ -94,12 +96,38 @@ class _SearchScreenState extends State<SearchScreen> {
       });
       AppLogger.info(
           'Search returned ${moviesList.length} movies, ${_actors.length} actors');
+
+      // 渐进补演员：搜索接口不带演员数据，逐个拉详情填充（不阻塞结果展示）。
+      if (moviesList.isNotEmpty) _enrichActors(moviesList, seq);
     } catch (e) {
       setState(() {
         _error = e.toString();
         _isLoading = false;
       });
       AppLogger.error('Search failed', e);
+    }
+  }
+
+  /// 对搜索结果逐个拉取详情（cast=1 跳过磁链查询）补填演员名，
+  /// 每拿到一个就刷新对应条目。新一轮搜索会把旧填充中止。
+  Future<void> _enrichActors(List<Movie> movies, int seq) async {
+    for (var i = 0; i < movies.length; i++) {
+      if (seq != _searchSeq) return;
+      final m = movies[i];
+      if (m.actors != null && m.actors!.isNotEmpty) continue;
+      try {
+        final detail = await _client.getMovie(m.id, cast: true);
+        if (seq != _searchSeq || !mounted) return;
+        final dm = detail['movie'];
+        if (dm is! Map<String, dynamic>) continue;
+        final actors =
+            (dm['actors'] as List?)?.cast<String>() ?? const <String>[];
+        if (actors.isEmpty) continue;
+        if (_movies.length <= i || _movies[i].id != m.id) continue;
+        setState(() => _movies[i] = m.copyWith(actors: actors));
+      } catch (_) {
+        // 单个补填失败忽略，不影响列表展示
+      }
     }
   }
 
