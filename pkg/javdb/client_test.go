@@ -307,6 +307,24 @@ func TestClientMovieRetriesUnknownIDAsCode(t *testing.T) {
 	}
 }
 
+// 全小写+数字的 id（app API 搜索原样返回，如 SONE-855 的 "824qk5"）必须原样
+// 作为 id 查询，不能被当成番号规范化大写（回归：详情页 not found: code 824QK5）。
+func TestClientMovieTriesLowercaseDigitIDVerbatim(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v4/movies/824qk5":         apiBody(`{"movie":{"id":"824qk5","number":"SONE-855","title":"標題"}}`),
+		"/api/v1/movies/824qk5/magnets": apiBody(`{"magnets":[]}`),
+	}))
+	c := newAPIClient(t, st)
+	d, err := c.Movie(context.Background(), "824qk5")
+	requireNoErr(t, err)
+	if d.ID != "824qk5" || d.Code != "SONE-855" {
+		t.Fatalf("detail: %+v", d.Movie)
+	}
+	if st.count("/api/v2/search") != 0 {
+		t.Fatalf("must not fall back to code search, saw %d", st.count("/api/v2/search"))
+	}
+}
+
 func TestClientLoginImportsSessionWithoutRequests(t *testing.T) {
 	st := newStub(t, routerHandler(map[string]string{
 		"/api/v2/search": apiBody(fixtureAPISearchData),

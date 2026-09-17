@@ -402,31 +402,20 @@ func orPeriod(p Period) Period {
 // Movie detail / magnets / reviews
 // ---------------------------------------------------------------------------
 
-// Movie returns full metadata for an id ("yxY7kW") or a video code ("MIDA-783").
-// Video codes are resolved through a search first; tokens that look like ids
-// but turn out to be unknown are retried as codes. Results are cached.
+// Movie returns full metadata for an id ("yxY7kW", "824qk5") or a video code
+// ("MIDA-783"). The token is tried verbatim as an id first: app-API ids are
+// base62 and case-sensitive, and some are digits+lower-case ("824qk5"), a shape
+// no code heuristic can reliably separate from a user-typed code — normalising
+// such an id breaks the lookup (SONE-855 详情 not found 实锤）。When the id
+// lookup misses, the token is resolved as a video code. Results are cached.
 func (c *Client) Movie(ctx context.Context, idOrCode string) (*Detail, error) {
 	token := strings.TrimSpace(idOrCode)
 	if token == "" {
 		return nil, fmt.Errorf("%w: empty movie reference", ErrInvalidQuery)
 	}
-	id := token
-	resolved := true
-	if !looksLikeID(token) {
-		m, err := c.FindByCode(ctx, token)
-		if err != nil {
-			return nil, err
-		}
-		if m.ID == "" {
-			return nil, fmt.Errorf("%w: code %s has no resolvable id", ErrNotFound, token)
-		}
-		id = m.ID
-		resolved = false
-	}
-	detail, err := c.detailByID(ctx, id)
-	if err != nil && resolved && errors.Is(err, ErrNotFound) {
-		// The id guess was wrong: treat the token as a video code instead.
-		if m, ferr := c.FindByCode(ctx, token); ferr == nil && m.ID != "" && m.ID != id {
+	detail, err := c.detailByID(ctx, token)
+	if err != nil {
+		if m, ferr := c.FindByCode(ctx, token); ferr == nil && m.ID != "" {
 			detail, err = c.detailByID(ctx, m.ID)
 		}
 	}
