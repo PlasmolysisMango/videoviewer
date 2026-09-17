@@ -9,7 +9,7 @@ on:
 
 env:
   GO_VERSION: '1.25'
-  FLUTTER_VERSION: '3.24.0'
+  FLUTTER_VERSION: '3.32.5'
 
 jobs:
   # Build the Windows release: Flutter app with the Go server binary placed
@@ -105,8 +105,8 @@ jobs:
       - name: Install Android SDK components
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "build-tools;33.0.1" \
-            "platforms;android-34"
+            "build-tools;35.0.0" \
+            "platforms;android-36"
 
       - name: Setup Android signing
         run: |
