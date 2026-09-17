@@ -216,12 +216,12 @@ type Actor struct {
 
 // Movie is a listing card / search hit: the compact form of a title.
 type Movie struct {
-	ID           string   `json:"id"`
-	Code         string   `json:"number"`
-	Title        string   `json:"title"`
-	OriginTitle  string   `json:"origin_title,omitempty"`
-	CoverURL     string   `json:"cover_url,omitempty"`
-	ThumbURL     string   `json:"thumb_url,omitempty"`
+	ID          string `json:"id"`
+	Code        string `json:"number"`
+	Title       string `json:"title"`
+	OriginTitle string `json:"origin_title,omitempty"`
+	CoverURL    string `json:"cover_url,omitempty"`
+	ThumbURL    string `json:"thumb_url,omitempty"`
 	// PosterURL is the vertical (2:3) cover art used by list cards. The app API
 	// serves wide 16:9 stills as cover/thumb, so callers should prefer this
 	// field for posters and fall back to CoverURL/ThumbURL.

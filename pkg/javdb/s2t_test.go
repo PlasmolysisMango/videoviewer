@@ -11,9 +11,9 @@ func TestToTraditional(t *testing.T) {
 	cases := [][2]string{
 		{"清原美优", "清原美優"},
 		{"苍井空", "蒼井空"},
-		{"桃園憐奈", "桃園憐奈"},  // already traditional
+		{"桃園憐奈", "桃園憐奈"},   // already traditional
 		{"清原みゆう", "清原みゆう"}, // kana untouched
-		{"FC2女优", "FC2女優"},   // latin untouched
+		{"FC2女优", "FC2女優"}, // latin untouched
 		{"", ""},
 	}
 	for _, c := range cases {

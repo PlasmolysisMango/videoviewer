@@ -120,13 +120,17 @@ func TestClientRankingUsesWebForAPIUnknownKind(t *testing.T) {
 	}
 }
 
-func TestClientCategoryListingIsWebOnly(t *testing.T) {
+// API 端点不可用（stub 404）时，实体 scope 的 category listing 回退 web。
+func TestClientCategoryListingFallsBackToWebWhenAPILacks(t *testing.T) {
 	st := newStub(t, routerHandler(map[string]string{"/makers/zKW": fixtureListingHTML}))
 	c := newDualClient(t, st)
 	res, err := c.CategoryMovies(context.Background(), CategoryQuery{Maker: "zKW"})
 	requireNoErr(t, err)
 	if len(res.Movies) != 3 {
 		t.Fatalf("movies: %d", len(res.Movies))
+	}
+	if st.count("/api/v1/movies/tags") != 1 {
+		t.Fatalf("api requests: %d", st.count("/api/v1/movies/tags"))
 	}
 	if got := st.lastRequest(t, "/makers/zKW").Query.Get("f"); got != "download" {
 		t.Fatalf("maker listing filter: %q", got)

@@ -70,7 +70,9 @@ func (b *webBackend) getHTML(ctx context.Context, path string, q url.Values) (*g
 	return nil, "", lastErr
 }
 
-// pageBlockedMessage reports an in-page gate that survived status inspection.
+// pageBlockedMessage reports an in-page gate that survived status inspection:
+// login walls and the 18+ confirmation shell page both mean the session is
+// missing/unusable, and both surface as ErrAuthRequired instead of empty data.
 func pageBlockedMessage(doc *goquery.Document) string {
 	var msg string
 	doc.Find("div.empty-message, div#require-login, div.login-required").Each(func(_ int, s *goquery.Selection) {
@@ -79,7 +81,8 @@ func pageBlockedMessage(doc *goquery.Document) string {
 			msg = t
 		}
 	})
-	if msg != "" && (strings.Contains(msg, "登入") || strings.Contains(msg, "登录") || strings.Contains(msg, "Login")) {
+	if msg != "" && (strings.Contains(msg, "登入") || strings.Contains(msg, "登录") ||
+		strings.Contains(msg, "Login") || strings.Contains(msg, "18")) {
 		return msg
 	}
 	return ""

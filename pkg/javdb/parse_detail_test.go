@@ -59,7 +59,8 @@ func TestParseDetail(t *testing.T) {
 	if d.PosterURL != "https://c0.jdbstatic.com/images/yxY7kW_poster.jpg" {
 		t.Fatalf("poster: %q", d.PosterURL)
 	}
-	if len(d.PreviewImages) != 2 || d.PreviewImages[0] != "https://c0.jdbstatic.com/preview/1_thumb.jpg" {
+	// Preview images now carry the large variant (tile href), not the thumb.
+	if len(d.PreviewImages) != 2 || d.PreviewImages[0] != "https://c0.jdbstatic.com/preview/1_large.jpg" {
 		t.Fatalf("preview images: %v", d.PreviewImages)
 	}
 	if len(d.FanartURLs) != 2 {

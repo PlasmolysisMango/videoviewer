@@ -8,11 +8,14 @@ import (
 	"sync"
 )
 
-// Subscription kinds: community list, genre tag, actor.
+// Subscription kinds: community list, genre tag, actor, favorite movie.
+// A movie "subscription" is a favorite: same storage, shown in the
+// favorites screen instead of the home columns.
 const (
 	KindCollection = "collection"
 	KindGenre      = "genre"
 	KindActor      = "actor"
+	KindMovie      = "movie"
 )
 
 // Subscription is one item the user pinned to the home screen: a community
@@ -34,7 +37,7 @@ func normalizeKind(k string) (string, error) {
 	switch k {
 	case "", KindCollection:
 		return KindCollection, nil
-	case KindGenre, KindActor:
+	case KindGenre, KindActor, KindMovie:
 		return k, nil
 	}
 	return "", fmt.Errorf("unknown subscription kind %q", k)

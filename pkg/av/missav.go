@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -210,60 +208,44 @@ func (s *MissAVSource) Detail(ctx context.Context, code string) (*Video, error) 
 	return v, nil
 }
 
-// Probe 轻量探测番号的可用变体（仅抓取 HTML 提取 UUID，不拉取播放列表）。
+// Probe 轻量探测番号的可用变体（仅抓取 HTML，不拉取播放列表）。
 // 用于前端在详情页快速展示变体按钮，用户点击后才按需调用 ResolveVariant。
-// 请求间加入随机延迟以避免触发 Cloudflare 频率限制。
+// 实现用一次搜索请求替代旧的逐个候选页探测：搜索结果列表天然聚合同一番号
+// 的各变体页面链接（-uncensored-leak / -chinese-subtitle / 原片 / 镜像），
+// 从卡片 href 归纳变体即可，请求数从 4 降为 1，显著降低触发 Cloudflare
+// 频率限制的风险；主域名 403 时由 fetchPage 自动回退备用域名。
+// 注意必须用中文站搜索 /cn/search/{code}：英文站 /search/ 的结果不收录
+// 中文字幕版卡片，会漏掉中字变体（实测 START-624：cn 站返回三卡，英文站只有两张）。
 func (s *MissAVSource) Probe(ctx context.Context, code string) (*ProbeResult, error) {
 	code = normalizeCode(code)
-	candidates := s.variantCandidates(code)
+	u := fmt.Sprintf("%s/cn/search/%s", s.base(), url.PathEscape(code))
+	html, err := s.fetchPage(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, err
+	}
 
-	variants := make([]VariantInfo, 0, len(candidates))
+	variants := make([]VariantInfo, 0, 3)
 	seenKind := map[string]bool{}
-
-	for i, cand := range candidates {
-		// 随机延迟 200-800ms，避免密集请求触发 CF
-		if i > 0 {
-			delay := time.Duration(200+rand.Intn(600)) * time.Millisecond
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
+	doc.Find("a[href]").Each(func(_ int, sel *goquery.Selection) {
+		href, _ := sel.Attr("href")
+		if href == "" || isNavHref(href) {
+			return
 		}
-
-		html, err := s.fetchPage(ctx, cand.url)
-		if err != nil {
-			continue
-		}
-		uuid, ok := extractMissAVUUID(html)
-		if !ok || uuid == "" {
-			continue
-		}
-		// 变体标记
-		tags := missavPageTags(html)
-		unc := cand.kind == "uncensored" || tagsMatchAny(tags, missavUncensoredTagHints)
-		cn := cand.kind == "cnsub" || tagsMatchAny(tags, missavCNSubTagHints)
-
-		kind := "normal"
-		label := "原片"
-		if unc {
-			kind = "uncensored"
-			label = "无码"
-		} else if cn {
-			kind = "cnsub"
-			label = "中字"
-		}
-
-		if seenKind[kind] {
-			continue // 同一变体去重
+		kind, ok := variantFromSlug(lastPathSegment(href), code)
+		if !ok || seenKind[kind] {
+			return // 同一变体去重（普通页与镜像页等价）
 		}
 		seenKind[kind] = true
 		variants = append(variants, VariantInfo{
 			Kind:      kind,
-			Label:     label,
+			Label:     variantLabel(kind),
 			Available: true,
 		})
-	}
+	})
 
 	if len(variants) == 0 {
 		return nil, fmt.Errorf("%w: no variants found for %s", ErrNotFound, code)
@@ -277,6 +259,42 @@ func (s *MissAVSource) Probe(ctx context.Context, code string) (*ProbeResult, er
 		Source:   s.Name(),
 		Variants: variants,
 	}, nil
+}
+
+// variantFromSlug 判断详情页链接末段是否为 code 的某个变体页并返回变体类型：
+// 末段等于 code（忽略大小写）为原片，或为 code 加已知后缀
+// （-uncensored-leak 无码流出版、-chinese-subtitle 中文字幕版）；其余（分片、
+// 无关番号等）不算变体。
+func variantFromSlug(slug, code string) (string, bool) {
+	if code == "" {
+		return "", false
+	}
+	seg := strings.ToLower(slug)
+	c := strings.ToLower(code)
+	if seg == c {
+		return "normal", true
+	}
+	for suffix, kind := range map[string]string{
+		"-uncensored-leak":  "uncensored",
+		"-chinese-subtitle": "cnsub",
+	} {
+		if strings.TrimSuffix(seg, suffix) == c {
+			return kind, true
+		}
+	}
+	return "", false
+}
+
+// variantLabel 返回变体的展示名。
+func variantLabel(kind string) string {
+	switch kind {
+	case "uncensored":
+		return "无码"
+	case "cnsub":
+		return "中字"
+	default:
+		return "原片"
+	}
 }
 
 // ResolveVariant 仅解析指定变体的播放流（按需加载）。

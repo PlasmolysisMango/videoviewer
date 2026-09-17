@@ -104,15 +104,15 @@ func parseDetail(doc *goquery.Document, movieID, source string) *Detail {
 	}
 	doc.Find("div.tile-images a.tile-item").Each(func(_ int, s *goquery.Selection) {
 		href, _ := s.Attr("href")
-		if href != "" {
-			d.FanartURLs = append(d.FanartURLs, FixImageURL(href))
+		// 预览 tile 的 href 一律指向大图；广告位链接指向跳转页而非图片，
+		// 以此滤除（广告 img 本身可能是 .jpg，不可信）。
+		large := imageAssetURL(href)
+		if large == "" {
+			return
 		}
-		if img := s.Find("img").First(); img.Length() > 0 {
-			src, _ := img.Attr("src")
-			if src != "" {
-				d.PreviewImages = append(d.PreviewImages, FixImageURL(src))
-			}
-		}
+		large = FixImageURL(large)
+		d.FanartURLs = append(d.FanartURLs, large)
+		d.PreviewImages = append(d.PreviewImages, large)
 	})
 	if v := doc.Find("video#preview-video").First(); v.Length() > 0 {
 		src, _ := v.Attr("src")
@@ -330,6 +330,30 @@ func findSize(s string) string {
 		if ParseSizeBytes(m) > 0 {
 			return strings.TrimSpace(m)
 		}
+	}
+	return ""
+}
+
+// imageAssetURL returns u when it points at a static image asset (image file
+// extension, query/fragment stripped), otherwise "". JavDB inserts ad tiles
+// between the preview images whose links lead to redirect pages, so this
+// filters them out while keeping real preview URLs.
+func imageAssetURL(u string) string {
+	u = strings.TrimSpace(u)
+	if u == "" {
+		return ""
+	}
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	switch {
+	case strings.HasSuffix(strings.ToLower(u), ".jpg"),
+		strings.HasSuffix(strings.ToLower(u), ".jpeg"),
+		strings.HasSuffix(strings.ToLower(u), ".png"),
+		strings.HasSuffix(strings.ToLower(u), ".webp"),
+		strings.HasSuffix(strings.ToLower(u), ".gif"),
+		strings.HasSuffix(strings.ToLower(u), ".avif"):
+		return u
 	}
 	return ""
 }

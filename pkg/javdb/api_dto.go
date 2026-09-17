@@ -66,9 +66,11 @@ type apiMovieDTO struct {
 	DirectorID      json.RawMessage `json:"director_id"`
 	DirectorName    string          `json:"director_name"`
 	PreviewVideoURL string          `json:"preview_video_url"`
-	TopRankings     []string        `json:"top_rankings"`
-	RelativeMovies  []apiMovie      `json:"relative_movies"`
-	Review          json.RawMessage `json:"review"`
+	// 上榜记录在 app API 中出现过 string / []string / object 多种形态，
+	// 无消费者，保留原始载荷避免形态变化炸掉整个详情解码。
+	TopRankings    json.RawMessage `json:"top_rankings"`
+	RelativeMovies []apiMovie      `json:"relative_movies"`
+	Review         json.RawMessage `json:"review"`
 }
 
 func (m apiMovie) code() string { return NormalizeCode(rawToString(m.Number)) }

@@ -95,7 +95,9 @@ type ReviewQuery struct {
 
 // CategoryQuery lists movies inside a bucket or a scoped entity page.
 // Exactly one of Category / VideoCode / Maker / Publisher / Series / Director /
-// TagIDs should be set; Category alone lists a top-level bucket.
+// ActorID should be set; Category alone lists a top-level bucket. TagIDs may
+// stand alone or ride along an entity scope (the app API narrows via
+// filter_by_tags).
 type CategoryQuery struct {
 	Category  Category
 	VideoCode string // "SSIS" -> /video_codes/SSIS
@@ -104,7 +106,8 @@ type CategoryQuery struct {
 	Director  string
 	Publisher string
 	ActorID   string // -> /actors/<id>
-	// TagIDs applies tag filters, keyed by category id ("4" -> c4=15).
+	// TagIDs applies tag filters, keyed by category id ("4" -> c4=15). It may
+	// also combine with an entity scope (app API: filter_by_tags).
 	TagIDs map[string]string
 	// DownloadableOnly restricts to entries with torrents (f=download on
 	// makers/video_codes, t=d on actors).
@@ -132,6 +135,8 @@ type ReviewPage struct {
 }
 
 var (
-	_ Backend = (*apiBackend)(nil)
-	_ Backend = (*webBackend)(nil)
+	_ Backend   = (*apiBackend)(nil)
+	_ Backend   = (*webBackend)(nil)
+	_ ListPager = (*apiBackend)(nil)
+	_ ListPager = (*webBackend)(nil)
 )

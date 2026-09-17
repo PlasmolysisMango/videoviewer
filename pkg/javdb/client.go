@@ -257,30 +257,63 @@ func (c *Client) ListMovies(ctx context.Context, listID string, p Page) (*Search
 
 // FindByCode looks up one movie by its exact video code ("SSIS-001").
 // It returns ErrNotFound when no backend reports an exact code match.
+// Search indexes occasionally miss hyphenated codes, so a hyphen-less variant
+// is tried before giving up; genuine transport/decode errors are surfaced as-is.
 func (c *Client) FindByCode(ctx context.Context, code string) (*Movie, error) {
 	want := NormalizeCode(code)
 	if want == "" {
 		return nil, fmt.Errorf("%w: empty code", ErrInvalidQuery)
 	}
-	res, err := c.Search(ctx, Query{Keyword: want, Scope: ScopeMovie, Filter: "code"})
+	queries := []string{want}
+	if alt := strings.ReplaceAll(want, "-", ""); alt != want {
+		queries = append(queries, alt)
+	}
+	var lastErr error
+	for _, kw := range queries {
+		res, err := c.searchForCode(ctx, kw)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if m := matchCode(res, want); m != nil {
+			return m, nil
+		}
+	}
+	if lastErr != nil &&
+		!errors.Is(lastErr, ErrEmptyResult) && !errors.Is(lastErr, ErrNotFound) {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("%w: code %s", ErrNotFound, want)
+}
+
+// searchForCode runs a movie-scope search preferring the code-only filter.
+func (c *Client) searchForCode(ctx context.Context, keyword string) (*SearchResult, error) {
+	res, err := c.Search(ctx, Query{Keyword: keyword, Scope: ScopeMovie, Filter: "code"})
 	if err != nil {
 		// Backends without a code-only filter still answer generic searches.
 		if !errors.Is(err, ErrInvalidQuery) {
-			res, err = c.Search(ctx, Query{Keyword: want, Scope: ScopeMovie})
+			res, err = c.Search(ctx, Query{Keyword: keyword, Scope: ScopeMovie})
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
+	return res, nil
+}
+
+// matchCode picks the exact code match; both sides go through NormalizeCode so
+// stray whitespace / width variants cannot miss. A single result without a
+// code field (some backends omit it) is accepted as-is.
+func matchCode(res *SearchResult, want string) *Movie {
 	for i := range res.Movies {
-		if res.Movies[i].Code == want {
-			return &res.Movies[i], nil
+		if NormalizeCode(res.Movies[i].Code) == want {
+			return &res.Movies[i]
 		}
 	}
 	if len(res.Movies) == 1 && res.Movies[0].Code == "" {
-		return &res.Movies[0], nil
+		return &res.Movies[0]
 	}
-	return nil, fmt.Errorf("%w: code %s", ErrNotFound, want)
+	return nil
 }
 
 // ---------------------------------------------------------------------------

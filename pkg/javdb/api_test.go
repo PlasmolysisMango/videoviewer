@@ -479,3 +479,185 @@ func TestAPIDisabledBackendIsNotRegistered(t *testing.T) {
 		t.Fatal("web backend should be set")
 	}
 }
+
+func TestAPICategoryTagBrowse(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v1/movies/tags": apiBody(`{"movies":[{"id":"a1","number":"SSIS-531","title":"甲"},{"id":"a2","number":"SSIS-698","title":"乙"}],"current_page":2}`),
+	}))
+	c := newAPIClient(t, st)
+	res, err := c.CategoryMovies(context.Background(), CategoryQuery{
+		TagIDs: map[string]string{"subject": "23"},
+		Page:   Page{Page: 2, Limit: 20},
+	})
+	requireNoErr(t, err)
+	if res.Source != "api" || len(res.Movies) != 2 || res.Current != 2 {
+		t.Fatalf("result: %+v", res)
+	}
+	// 短页（2 < limit 20）→ 合成 maxPage = 当前页（末页）。
+	if res.MaxPage != 2 {
+		t.Fatalf("MaxPage = %d, want 2 (short page = last)", res.MaxPage)
+	}
+	q := st.lastRequest(t, "/api/v1/movies/tags").Query
+	if q.Get("filter_by") != "0:t::23::" {
+		t.Fatalf("filter_by: %q", q.Get("filter_by"))
+	}
+	if q.Get("sort_by") != "hit" || q.Get("page") != "2" || q.Get("limit") != "20" {
+		t.Fatalf("query: %v", q)
+	}
+}
+
+// 端点不报 total_pages：满页合成 page+1（大概率还有下一页），短页即末页。
+func TestAPICategoryMaxPageSynthesis(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v1/movies/tags": apiBody(`{"movies":[{"id":"a1","number":"SSIS-531","title":"甲"},{"id":"a2","number":"SSIS-698","title":"乙"}],"current_page":3}`),
+	}))
+	c := newAPIClient(t, st)
+	res, err := c.CategoryMovies(context.Background(), CategoryQuery{
+		TagIDs: map[string]string{"subject": "23"},
+		Page:   Page{Page: 3, Limit: 2},
+	})
+	requireNoErr(t, err)
+	if res.MaxPage != 4 {
+		t.Fatalf("full page: MaxPage = %d, want 4 (current+1)", res.MaxPage)
+	}
+}
+
+// 多个 tag id（values）全部拼接；keys（web 组号）在 app 端被忽略。
+func TestAPICategoryTagBrowseMultiTag(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v1/movies/tags": apiBody(`{"movies":[],"total_entries":0}`),
+	}))
+	c := newAPIClient(t, st)
+	_, err := c.CategoryMovies(context.Background(), CategoryQuery{
+		TagIDs: map[string]string{"subject": "23", "cloth": "57"},
+	})
+	if !errors.Is(err, ErrEmptyResult) {
+		t.Fatalf("err = %v, want ErrEmptyResult", err)
+	}
+	q := st.lastRequest(t, "/api/v1/movies/tags").Query
+	if q.Get("filter_by") != "0:t::23,57::" {
+		t.Fatalf("filter_by: %q", q.Get("filter_by"))
+	}
+}
+
+func TestAPICategoryActorMask(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v1/movies/tags": apiBody(`{"movies":[{"id":"a1","number":"IPX-811","title":"甲"}],"current_page":1}`),
+	}))
+	c := newAPIClient(t, st)
+	res, err := c.CategoryMovies(context.Background(), CategoryQuery{
+		ActorID: "kzx6",
+		Page:    Page{Page: 1, Limit: 10},
+	})
+	requireNoErr(t, err)
+	if len(res.Movies) != 1 {
+		t.Fatalf("movies: %+v", res.Movies)
+	}
+	q := st.lastRequest(t, "/api/v1/movies/tags").Query
+	if q.Get("filter_by") != "0:a:kzx6" {
+		t.Fatalf("filter_by: %q", q.Get("filter_by"))
+	}
+	if q.Get("sort_by") != "release" {
+		t.Fatalf("actor sort: %q", q.Get("sort_by"))
+	}
+}
+
+// 无 app API 字母的 scoped listing（发行商）仍由 web 后端承担。
+func TestAPICategoryUnsupportedScope(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{}))
+	c := newAPIClient(t, st)
+	_, err := c.CategoryMovies(context.Background(), CategoryQuery{Publisher: "aB3"})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
+	}
+	if st.total() != 0 {
+		t.Fatal("unsupported scope must not hit the network")
+	}
+}
+
+// 实体 scope 全部走同一端点：字母 a/m/s/d/c；refs 即共享的 web/app 实体 id
+// （探测证实 maker ZXX、code SSIS 无需解析），排序固定 release。
+func TestAPICategoryEntityScopes(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v1/movies/tags": apiBody(`{"movies":[{"id":"a1","number":"IPZZ-936","title":"甲"}],"current_page":1}`),
+	}))
+	c := newAPIClient(t, st)
+	cases := []struct {
+		name string
+		q    CategoryQuery
+		mask string
+	}{
+		{"maker", CategoryQuery{Maker: "ZXX"}, "0:m:ZXX"},
+		{"series", CategoryQuery{Series: "eAb"}, "0:s:eAb"},
+		{"director", CategoryQuery{Director: "65e0"}, "0:d:65e0"},
+		{"video code", CategoryQuery{VideoCode: " ssis "}, "0:c:SSIS"},
+	}
+	for _, tc := range cases {
+		res, err := c.CategoryMovies(context.Background(), tc.q)
+		requireNoErr(t, err)
+		if len(res.Movies) != 1 || res.Movies[0].Code != "IPZZ-936" {
+			t.Fatalf("%s: movies %+v", tc.name, res.Movies)
+		}
+		q := st.lastRequest(t, "/api/v1/movies/tags").Query
+		if q.Get("filter_by") != tc.mask {
+			t.Fatalf("%s: filter_by = %q, want %q", tc.name, q.Get("filter_by"), tc.mask)
+		}
+		if q.Get("sort_by") != "release" || q.Get("filter_by_tags") != "" {
+			t.Fatalf("%s: query %v", tc.name, q)
+		}
+	}
+}
+
+// main flags：下载=m、中字=c，逗号连接；tag mask 插入第三段，实体 mask 追加
+// ":{main}::" 尾段。
+func TestAPICategoryMainFlags(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v1/movies/tags": apiBody(`{"movies":[{"id":"a1","number":"SSIS-469","title":"甲"}],"current_page":1}`),
+	}))
+	c := newAPIClient(t, st)
+	cases := []struct {
+		name string
+		q    CategoryQuery
+		mask string
+	}{
+		{"tags downloadable", CategoryQuery{TagIDs: map[string]string{"subject": "23"}, DownloadableOnly: true}, "0:t:m:23::"},
+		{"tags subtitle", CategoryQuery{TagIDs: map[string]string{"subject": "23"}, WithSubtitle: true}, "0:t:c:23::"},
+		{"tags both", CategoryQuery{TagIDs: map[string]string{"subject": "23"}, DownloadableOnly: true, WithSubtitle: true}, "0:t:m,c:23::"},
+		{"actor downloadable", CategoryQuery{ActorID: "kzx6", DownloadableOnly: true}, "0:a:kzx6:m::"},
+		{"maker both", CategoryQuery{Maker: "ZXX", DownloadableOnly: true, WithSubtitle: true}, "0:m:ZXX:m,c::"},
+	}
+	for _, tc := range cases {
+		if _, err := c.CategoryMovies(context.Background(), tc.q); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := st.lastRequest(t, "/api/v1/movies/tags").Query.Get("filter_by"); got != tc.mask {
+			t.Fatalf("%s: filter_by = %q, want %q", tc.name, got, tc.mask)
+		}
+	}
+}
+
+// 实体 × 题材组合：叠加过滤走独立的 filter_by_tags 参数。
+func TestAPICategoryEntityTagCombo(t *testing.T) {
+	st := newStub(t, routerHandler(map[string]string{
+		"/api/v1/movies/tags": apiBody(`{"movies":[{"id":"a1","number":"IPOK-032","title":"甲"}],"current_page":1}`),
+	}))
+	c := newAPIClient(t, st)
+	res, err := c.CategoryMovies(context.Background(), CategoryQuery{
+		ActorID: "kzx6",
+		TagIDs:  map[string]string{"subject": "23", "cloth": "57"},
+	})
+	requireNoErr(t, err)
+	if len(res.Movies) != 1 {
+		t.Fatalf("movies: %+v", res.Movies)
+	}
+	q := st.lastRequest(t, "/api/v1/movies/tags").Query
+	if q.Get("filter_by") != "0:a:kzx6" {
+		t.Fatalf("filter_by: %q", q.Get("filter_by"))
+	}
+	if q.Get("filter_by_tags") != "23,57" {
+		t.Fatalf("filter_by_tags: %q", q.Get("filter_by_tags"))
+	}
+	if q.Get("sort_by") != "release" {
+		t.Fatalf("sort_by: %q", q.Get("sort_by"))
+	}
+}

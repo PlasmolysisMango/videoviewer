@@ -3,6 +3,7 @@ package goserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -744,8 +745,8 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGenre serves tag-scoped browsing: /api/genre?group=2&tag=1&page=.
-// 题材（角色/主題/服裝…）走 web 端的 /tags?c{group}={tag} 页面，该页需要
-// 网页版登录态；未导入 web cookie 时返回明确错误。
+// 题材浏览由 app 端 /v1/movies/tags 承载（tag id 全局唯一，group 键仅作
+// 兼容保留），无需网页版登录态；app API 不可用时客户端自动回退 web 端。
 func (s *Server) handleGenre(w http.ResponseWriter, r *http.Request) {
 	group := strings.TrimSpace(r.URL.Query().Get("group"))
 	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
@@ -764,6 +765,13 @@ func (s *Server) handleGenre(w http.ResponseWriter, r *http.Request) {
 		Page:   javdb.Page{Page: page, Limit: limit},
 	})
 	if err != nil {
+		if errors.Is(err, javdb.ErrEmptyResult) {
+			// app 端点不报总页数（合成边界翻过末页时命中），以空列表呈现而非报错。
+			writeJSON(w, http.StatusOK, map[string]any{
+				"movies": []any{}, "page": page, "maxPage": page,
+			})
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

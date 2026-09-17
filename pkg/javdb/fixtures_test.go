@@ -79,6 +79,7 @@ const fixtureDetailHTML = `<!DOCTYPE html>
 <div class="tile-images">
   <a class="tile-item" href="https://x/rhe951l4q/preview/1_large.jpg"><img src="https://x/rhe951l4q/preview/1_thumb.jpg"></a>
   <a class="tile-item" href="https://x/rhe951l4q/preview/2_large.jpg"><img src="https://x/rhe951l4q/preview/2_thumb.jpg"></a>
+  <a class="tile-item" href="https://ads.example/click/123"><img src="https://ads.example/banner.jpg"></a>
 </div>
 <a class="review-tab">25</a>
 <span class="is-size-7">1234 人想看</span>

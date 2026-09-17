@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -513,6 +514,138 @@ func (b *apiBackend) RelatedLists(ctx context.Context, movieID string, p Page) (
 		lists = append(lists, Link{Name: l.Name, ID: l.ID, Href: "/lists/" + l.ID, Kind: "list"})
 	}
 	return lists, nil
+}
+
+// CategoryMovies implements ListPager for tag browsing and entity filmography
+// (actor, maker, series, director, video code) via GET /v1/movies/tags — the
+// endpoint behind the official app's 类别 tab, discovered in the reference
+// javdb-cli and verified live. The filter_by mask is
+// "{zone}:t:{main}:{tagIds}::" for tag browsing and "{zone}:{letter}:{id}"
+// (plus a ":{main}::" tail when main flags apply) for entities, with letters
+// a/m/s/d/c; the refs are the shared web/app entity ids, so no name resolution
+// is attempted here. Publishers have no app-API letter and stay web-only via
+// ErrUnsupported, like bucket listings; the caller then falls back to the HTML
+// backend. DownloadableOnly and WithSubtitle map to the main flags m/c (live
+// probes: every returned row had magnets_count>0 resp. has_cnsub=true). An
+// entity query combined with TagIDs narrows via the separate filter_by_tags
+// parameter. An empty result set is reported as ErrEmptyResult so the caller
+// knows the filter truly matched nothing.
+func (b *apiBackend) CategoryMovies(ctx context.Context, q CategoryQuery) (*SearchResult, error) {
+	zone := apiZoneType(q.Category)
+	if zone == "" {
+		return nil, fmt.Errorf("%w: api category %q", ErrUnsupported, q.Category)
+	}
+	letter, ref, hasEntity := apiCategoryEntity(q)
+	// App tag ids are globally unique (no web c{N} group coordinate needed);
+	// join every value — keys are ignored. Sorting keeps the mask independent
+	// of map iteration order.
+	tagIDs := make([]string, 0, len(q.TagIDs))
+	for _, id := range q.TagIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			tagIDs = append(tagIDs, id)
+		}
+	}
+	slices.Sort(tagIDs)
+	if !hasEntity && len(q.TagIDs) > 0 && len(tagIDs) == 0 {
+		return nil, fmt.Errorf("%w: api category: empty tag ids", ErrInvalidQuery)
+	}
+	main := apiMainFlags(q)
+	var mask, sortBy string
+	switch {
+	case hasEntity:
+		mask = fmt.Sprintf("%s:%s:%s", zone, letter, ref)
+		if main != "" {
+			mask += ":" + main + "::"
+		}
+		sortBy = "release"
+	case len(tagIDs) > 0:
+		mask = fmt.Sprintf("%s:t:%s:%s::", zone, main, strings.Join(tagIDs, ","))
+		sortBy = "hit"
+	default:
+		return nil, fmt.Errorf("%w: api category listing (tags/entity only)", ErrUnsupported)
+	}
+	params := url.Values{
+		"filter_by": {mask},
+		"sort_by":   {sortBy},
+		"order_by":  {"desc"},
+		"page":      {strconv.Itoa(q.pageOrDefault(1))},
+		"limit":     {strconv.Itoa(q.limitOrDefault(20))},
+	}
+	if hasEntity && len(tagIDs) > 0 {
+		// Entity × tag rides the separate filter_by_tags parameter (verified
+		// live: 0:a:kzx6 + filter_by_tags=23 narrows the filmography).
+		params.Set("filter_by_tags", strings.Join(tagIDs, ","))
+	}
+	var out apiSearchData
+	if err := b.getJSON(ctx, "/v1/movies/tags", params, &out); err != nil {
+		return nil, err
+	}
+	res := &SearchResult{
+		Query:   Query{Category: q.Category, TagIDs: q.TagIDs, Page: q.Page},
+		Current: out.CurrentPage,
+		MaxPage: out.TotalPages,
+		Total:   out.TotalCount,
+		Source:  b.Name(),
+	}
+	if res.Total == 0 {
+		res.Total = out.TotalEntries
+	}
+	for _, m := range out.Movies {
+		res.Movies = append(res.Movies, m.toMovie(b.t.Site()))
+	}
+	if res.Current == 0 {
+		res.Current = q.pageOrDefault(1)
+	}
+	// The endpoint reports neither total_pages nor total_count; synthesise a
+	// "has next" bound so the app pager stays usable: a full page implies a
+	// likely next page, a short page is the last one.
+	if res.MaxPage == 0 && len(res.Movies) > 0 {
+		if len(res.Movies) >= q.limitOrDefault(20) {
+			res.MaxPage = res.Current + 1
+		} else {
+			res.MaxPage = res.Current
+		}
+	}
+	if len(res.Movies) == 0 && res.Total == 0 {
+		return nil, fmt.Errorf("%w: api tag browse %v", ErrEmptyResult, q.TagIDs)
+	}
+	return res, nil
+}
+
+// apiCategoryEntity maps an entity scope onto its filter_by letter
+// (a=actor, m=maker, s=series, d=director, c=video code). The refs are the
+// same entity ids the web slugs use (live-verified: actor kzx6, maker ZXX,
+// code SSIS), so the value is passed through untouched; publishers have no
+// app-API letter. ok=false marks a non-entity query.
+func apiCategoryEntity(q CategoryQuery) (letter, ref string, ok bool) {
+	switch {
+	case q.ActorID != "":
+		return "a", url.PathEscape(q.ActorID), true
+	case q.Maker != "":
+		return "m", url.PathEscape(q.Maker), true
+	case q.Series != "":
+		return "s", url.PathEscape(q.Series), true
+	case q.Director != "":
+		return "d", url.PathEscape(q.Director), true
+	case q.VideoCode != "":
+		return "c", url.PathEscape(NormalizeCode(q.VideoCode)), true
+	default:
+		return "", "", false
+	}
+}
+
+// apiMainFlags renders the filter_by main slot from the query flags:
+// m=downloadable (magnets), c=Chinese subtitles, comma-joined. The letters
+// were verified live; p (playable) exists but no query flag maps to it.
+func apiMainFlags(q CategoryQuery) string {
+	var flags []string
+	if q.DownloadableOnly {
+		flags = append(flags, "m")
+	}
+	if q.WithSubtitle {
+		flags = append(flags, "c")
+	}
+	return strings.Join(flags, ",")
 }
 
 // TagGroups implements TagProvider via GET /v1/tags.
