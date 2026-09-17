@@ -217,6 +217,25 @@ func TestMissAVResolveDedupeUUID(t *testing.T) {
 	}
 }
 
+// TestMissAVSlug 验证 MissAV slug 的尾部数字补零规则（数字段固定三位宽）。
+func TestMissAVSlug(t *testing.T) {
+	cases := map[string]string{
+		"LAFBD-41":        "lafbd-041", // 两位补一零（实测 302 → lafbd-041）
+		"ipx-88":          "ipx-088",   // 两位补一零
+		"ssis-41":         "ssis-041",
+		"MIDV-001":        "midv-001",        // 三位不变
+		"fc2-ppv-1234567": "fc2-ppv-1234567", // 长数字不动
+		"300mium-741":     "300mium-741",
+		"carib":           "carib", // 无尾部数字段
+		"12345":           "12345", // 纯数字不补
+	}
+	for in, want := range cases {
+		if got := missavSlug(in); got != want {
+			t.Errorf("missavSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestMissAVResolveNotFound 验证全部变体不存在时报 ErrNotFound。
 func TestMissAVResolveNotFound(t *testing.T) {
 	srv := stubMissAVSite(t, map[string]string{})

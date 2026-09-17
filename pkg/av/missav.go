@@ -48,10 +48,35 @@ func (s *MissAVSource) base() string {
 	return "https://" + s.domain
 }
 
+// padCodeDigits 将番号尾部数字段补零到三位，保留其余字符原样
+// （LAFBD-41 → LAFBD-041）。MissAV 的 slug 数字段固定三位宽，搜索与详情页
+// 都按补零后的形式索引；未补零 code 的直访仅靠 302 重定向兜底
+// （/cn/lafbd-41 → /cn/lafbd-041），但搜索 /cn/search/LAFBD-41 搜不到任何卡片、
+// 变体页 /cn/lafbd-41-uncensored-leak 404，导致 probe 失败、前端回退占位三变体
+// 后无码/中字播放失败（实测 LAFBD-41 / SSIS-41 / IPX-88）。
+func padCodeDigits(code string) string {
+	c := strings.TrimSpace(code)
+	i := strings.LastIndexFunc(c, func(r rune) bool { return r < '0' || r > '9' })
+	if i < 0 || i == len(c)-1 {
+		return c // 无尾部数字段（纯字母或以非数字结尾），无从补零
+	}
+	digits := c[i+1:]
+	if n := len(digits); n < 3 {
+		digits = strings.Repeat("0", 3-n) + digits
+	}
+	return c[:i+1] + digits
+}
+
+// missavSlug 是 MissAV 详情页/搜索索引使用的 slug 形式：小写 + 尾部数字补零
+// （LAFBD-41 → lafbd-041）。卡片 href、详情页路径均为该形式。
+func missavSlug(code string) string {
+	return strings.ToLower(padCodeDigits(code))
+}
+
 // pageCandidates 返回番号详情页的候选 URL（不同字幕/镜像路径），逐个尝试。
 // 借鉴 NASSAV missAVDownloader.getHTML 的多路径策略。
 func (s *MissAVSource) pageCandidates(code string) []string {
-	c := strings.ToLower(code)
+	c := missavSlug(code)
 	return []string{
 		fmt.Sprintf("%s/cn/%s-chinese-subtitle", s.base(), c),
 		fmt.Sprintf("%s/cn/%s-uncensored-leak", s.base(), c),
@@ -69,7 +94,7 @@ type variantPage struct {
 // variantCandidates 返回同一番号的全部片源变体页：
 // 无码流出版（-uncensored-leak）、中文字幕版（-chinese-subtitle）、普通版与镜像。
 func (s *MissAVSource) variantCandidates(code string) []variantPage {
-	c := strings.ToLower(code)
+	c := missavSlug(code)
 	return []variantPage{
 		{url: fmt.Sprintf("%s/cn/%s-uncensored-leak", s.base(), c), kind: "uncensored"},
 		{url: fmt.Sprintf("%s/cn/%s-chinese-subtitle", s.base(), c), kind: "cnsub"},
@@ -218,7 +243,9 @@ func (s *MissAVSource) Detail(ctx context.Context, code string) (*Video, error) 
 // 中文字幕版卡片，会漏掉中字变体（实测 START-624：cn 站返回三卡，英文站只有两张）。
 func (s *MissAVSource) Probe(ctx context.Context, code string) (*ProbeResult, error) {
 	code = normalizeCode(code)
-	u := fmt.Sprintf("%s/cn/search/%s", s.base(), url.PathEscape(code))
+	// 搜索词补零但保留大小写（MissAV 搜索不区分大小写，索引按补零 slug
+	// 分词，未补零的 LAFBD-41 搜不到任何卡片）；卡片 href 匹配用小写 slug。
+	u := fmt.Sprintf("%s/cn/search/%s", s.base(), url.PathEscape(padCodeDigits(code)))
 	html, err := s.fetchPage(ctx, u)
 	if err != nil {
 		return nil, err
@@ -235,7 +262,7 @@ func (s *MissAVSource) Probe(ctx context.Context, code string) (*ProbeResult, er
 		if href == "" || isNavHref(href) {
 			return
 		}
-		kind, ok := variantFromSlug(lastPathSegment(href), code)
+		kind, ok := variantFromSlug(lastPathSegment(href), missavSlug(code))
 		if !ok || seenKind[kind] {
 			return // 同一变体去重（普通页与镜像页等价）
 		}
@@ -264,7 +291,8 @@ func (s *MissAVSource) Probe(ctx context.Context, code string) (*ProbeResult, er
 // variantFromSlug 判断详情页链接末段是否为 code 的某个变体页并返回变体类型：
 // 末段等于 code（忽略大小写）为原片，或为 code 加已知后缀
 // （-uncensored-leak 无码流出版、-chinese-subtitle 中文字幕版）；其余（分片、
-// 无关番号等）不算变体。
+// 无关番号等）不算变体。code 由调用方先经 missavSlug 补零（搜索结果卡片
+// 的 slug 均为补零形式，如 lafbd-041）。
 func variantFromSlug(slug, code string) (string, bool) {
 	if code == "" {
 		return "", false
