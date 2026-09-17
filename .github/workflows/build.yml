@@ -7,8 +7,13 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Cancel superseded in-progress runs when new commits are pushed
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.26'
   FLUTTER_VERSION: '3.32.5'
 
 jobs:
@@ -33,6 +38,14 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
+          cache: true
+
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Pub\Cache
+          key: pub-${{ runner.os }}-${{ hashFiles('flutter_app/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
 
       - name: Get Flutter dependencies
         working-directory: ./flutter_app
@@ -122,6 +135,13 @@ jobs:
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('flutter_app/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
 
       - name: Get Flutter dependencies
         working-directory: ./flutter_app
