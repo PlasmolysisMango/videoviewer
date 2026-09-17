@@ -9,7 +9,10 @@ import '../providers/theme_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
+import '../widgets/common_ui.dart';
+import 'actor_catalog_screen.dart';
 import 'collection_screen.dart';
+import 'genre_catalog_screen.dart';
 import 'genre_screen.dart';
 import 'list_detail_screen.dart';
 import 'log_screen.dart';
@@ -17,15 +20,18 @@ import 'movie_detail_screen.dart';
 import 'ranking_screen.dart';
 import 'search_screen.dart';
 
-/// 首页：影视风布局，背景跟随全局主题（默认白色）。
-/// 区块：热门推荐（订阅合集 + TOP250 随机池）、排行榜（热播/Top250/演员）、
-/// 题材分类（tag 分组浏览）、合集入口与已订阅合集（实时更新）。
+/// 首页：现代流媒体风布局，背景跟随全局主题。
+/// 区块：为你推荐（订阅合集 + TOP250 随机池）、榜单入口、
+/// 合集/题材/演员三分栏——仅展示订阅内容，右上角灰色图钉标记订阅项。
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
+
+/// 订阅标记统一用低饱和灰，不做醒目强调。
+const _subMarkColor = Color(0xFF9AA3AD);
 
 class _HomeScreenState extends State<HomeScreen> {
   /// TOP250 合集切面（与合集页一致）：热门推荐从其中随机取样。
@@ -45,9 +51,6 @@ class _HomeScreenState extends State<HomeScreen> {
   late final JavDBClient _client;
   late final PageController _bannerController;
   List<Movie> _recMovies = [];
-  List<Map<String, dynamic>> _genreGroups = [];
-  int _genreGroupIndex = 0;
-  String? _genreError;
   bool _loading = true;
   String? _error;
   int _bannerPage = 0;
@@ -80,8 +83,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _error = null;
     });
     try {
-      // 题材分组并行拉取但不阻塞主体：失败时仅降级题材区块。
-      _loadGenres();
       final recMovies = await _recommendFromPool();
       if (!mounted) return;
       setState(() {
@@ -99,36 +100,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 题材分组（角色/主題/服裝…）：mobile API 匿名可拉；
-  /// 只保留有 web_group_id 映射的组，浏览具体题材影片才需要网页 Cookie。
-  void _loadGenres() {
-    _client.getTags().then((data) {
-      if (!mounted) return;
-      final groups = (data['tags'] as List?)
-              ?.map((e) => e as Map<String, dynamic>)
-              .where((g) =>
-                  ((g['web_group_id'] as String?) ?? '').isNotEmpty &&
-                  ((g['options'] as List?)?.isNotEmpty ?? false))
-              .toList() ??
-          const <Map<String, dynamic>>[];
-      setState(() {
-        _genreGroups = groups;
-        _genreGroupIndex = 0;
-        _genreError = groups.isEmpty ? '暂无题材数据' : null;
-      });
-    }).catchError((Object e) {
-      AppLogger.warning('Failed to load tags: $e');
-      if (mounted) setState(() => _genreError = e.toString());
-    });
-  }
-
   /// 热门推荐池：随机 1 个订阅合集 + 1 个 TOP250 切面（无订阅时取
   /// 2 个 TOP250 切面），合并去重洗牌，每次进入首页/下拉刷新都不同。
   /// TOP250 需要登录，失败时回退热播榜，保证首页总有内容。
   Future<List<Movie>> _recommendFromPool() async {
     final provider = context.read<SubscriptionProvider>();
     await provider.ensureLoaded();
-    final subs = [...provider.subscriptions]..shuffle();
+    final subs = [...provider.byKind(kSubCollection)]..shuffle();
     final facets = [..._top250Facets]..shuffle();
     try {
       final requests = <Future<Map<String, dynamic>>>[
@@ -282,15 +260,17 @@ class _HomeScreenState extends State<HomeScreen> {
                               fontSize: 12)),
                     ),
                   _buildSectionHeader(
-                      context, '热门推荐', Icons.local_fire_department),
+                      context, '为你推荐', Icons.local_fire_department),
                   _buildBanner(context),
-                  _buildSectionHeader(context, '排行榜', Icons.emoji_events),
+                  _buildSectionHeader(context, '榜单', Icons.emoji_events),
                   _buildRankingEntries(context),
-                  _buildSectionHeader(context, '题材分类', Icons.category),
-                  _buildGenreSection(context),
                   _buildSectionHeader(context, '合集', Icons.collections_bookmark),
                   _buildCollectionEntry(context),
-                  _buildSubscribedLists(context),
+                  _buildSubscribedCollectionCards(context),
+                  _buildSectionHeader(context, '题材', Icons.category),
+                  _buildGenreSection(context),
+                  _buildSectionHeader(context, '演员', Icons.face_retouching_natural),
+                  _buildActorSection(context),
                 ],
               ),
             ),
@@ -477,42 +457,45 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ------------------------------------------------------------------ 榜单入口
 
+  /// 榜单入口：三张紧凑卡片（着色图标 + 名称），现代扁平风。
   Widget _buildRankingEntries(BuildContext context) {
-    final entries = [
+    const entries = [
       ('热播榜', Icons.whatshot, Color(0xFFFF7043), 'playback'),
       ('Top250', Icons.emoji_events, Color(0xFFFFD54F), 'top250'),
       ('演员榜', Icons.face_retouching_natural, Color(0xFFE8506E), 'actors'),
     ];
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
-        children: entries.map((e) {
-          final (label, icon, color, kind) = e;
-          return Expanded(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(14),
-              onTap: () => _push(context, RankingScreen(initialKind: kind)),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 52,
-                      height: 52,
-                      decoration: BoxDecoration(
-                        color: color.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Icon(icon, color: color, size: 28),
+        children: [
+          for (var i = 0; i < entries.length; i++)
+            Expanded(
+              child: Container(
+                margin: EdgeInsets.only(left: i == 0 ? 0 : 8),
+                decoration: BoxDecoration(
+                  color: _cardColor,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Theme.of(context).dividerColor),
+                ),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () =>
+                      _push(context, RankingScreen(initialKind: entries[i].$4)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Column(
+                      children: [
+                        Icon(entries[i].$2, color: entries[i].$3, size: 26),
+                        const SizedBox(height: 6),
+                        Text(entries[i].$1,
+                            style: const TextStyle(fontSize: 12)),
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    Text(label, style: const TextStyle(fontSize: 13)),
-                  ],
+                  ),
                 ),
               ),
             ),
-          );
-        }).toList(),
+        ],
       ),
     );
   }
@@ -554,7 +537,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         style: TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600)),
                     SizedBox(height: 2),
-                    Text('总榜 · 年度榜 · 有码 / 无码 / 欧美 / FC2',
+                    Text('总榜 · 年度榜 · 类型切面',
                         style: TextStyle(fontSize: 12, color: Colors.grey)),
                   ],
                 ),
@@ -567,25 +550,73 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ------------------------------------------------------------- 已订阅合集
+  // ---------------------------------------------------------------- 分栏公共
 
-  /// 已订阅合集区块：数据来自 SubscriptionProvider（订阅/取消后实时更新），
-  /// 无订阅时隐藏。
-  Widget _buildSubscribedLists(BuildContext context) {
-    final subs = context.watch<SubscriptionProvider>().subscriptions;
-    if (subs.isEmpty) return const SizedBox.shrink();
-    return Column(
-      children: [
-        _buildSectionHeader(context, '已订阅合集', Icons.bookmarks),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            children: [
-              for (final s in subs) _buildSubscriptionCard(context, s),
-            ],
-          ),
+  /// 分栏入口卡片（自带项，无图钉）：跳转对应的浏览/订阅管理页。
+  Widget _buildSectionEntryCard(
+    BuildContext context, {
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: _cardColor,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Theme.of(context).dividerColor),
         ),
-      ],
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: iconColor.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: iconColor, size: 24),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------ 合集栏
+
+  /// 已订阅合集卡片列：与自带 TOP250 入口同栏，图钉角标标记订阅项。
+  Widget _buildSubscribedCollectionCards(BuildContext context) {
+    final subs = context.watch<SubscriptionProvider>().byKind(kSubCollection);
+    if (subs.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        children: [
+          for (final s in subs) _buildSubscriptionCard(context, s),
+        ],
+      ),
     );
   }
 
@@ -595,145 +626,227 @@ class _HomeScreenState extends State<HomeScreen> {
     final count = (s['movies_count'] as num?)?.toInt() ?? 0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: () => _push(
-          context,
-          ListDetailScreen(
-              listId: id, listName: name, moviesCount: count),
-        ),
-        child: Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: _cardColor,
+      child: Stack(
+        children: [
+          InkWell(
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Theme.of(context).dividerColor),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFD54F).withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.collections_bookmark,
-                    color: Color(0xFFFFD54F), size: 20),
+            onTap: () => _push(
+              context,
+              ListDetailScreen(
+                  listId: id, listName: name, moviesCount: count),
+            ),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: _cardColor,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Theme.of(context).dividerColor),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w600)),
+              child: Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFD54F).withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.collections_bookmark,
+                        color: Color(0xFFFFD54F), size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w600)),
+                  ),
+                  Text('$count 部',
+                      style: TextStyle(
+                          fontSize: 12, color: Theme.of(context).hintColor)),
+                  const SizedBox(width: 4),
+                  Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
+                ],
               ),
-              Text('$count 部',
-                  style: TextStyle(
-                      fontSize: 12, color: Theme.of(context).hintColor)),
-              const SizedBox(width: 4),
-              Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
-            ],
+            ),
           ),
+          // 图钉：标记订阅项（灰色低饱和，不做醒目强调）
+          const Positioned(
+            top: 2,
+            right: 4,
+            child: Icon(Icons.push_pin, size: 14, color: _subMarkColor),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------ 题材栏
+
+  /// 题材栏：入口卡片（题材大类页）+ 已订阅题材 chip（灰色图钉标记）。
+  Widget _buildGenreSection(BuildContext context) {
+    final subs = context.watch<SubscriptionProvider>().byKind(kSubGenre);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildSectionEntryCard(
+            context,
+            icon: Icons.category,
+            iconColor: const Color(0xFF4FC3F7),
+            title: '浏览全部题材',
+            subtitle: '角色 · 主题 · 服装 · 行为…',
+            onTap: () => _push(context, const GenreCatalogScreen()),
+          ),
+          if (subs.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final s in subs) _buildGenreChip(context, s),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 已订阅题材 chip：灰图钉 + 题材名，点击进题材影片页。
+  Widget _buildGenreChip(BuildContext context, Map<String, dynamic> s) {
+    final tagId = (s['id'] as String?) ?? '';
+    final name = (s['name'] as String?) ?? tagId;
+    final group = (s['group'] as String?) ?? '';
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () => _push(
+        context,
+        GenreScreen(groupId: group, tagId: tagId, title: name),
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: _cardColor,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Theme.of(context).dividerColor),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.push_pin, size: 12, color: _subMarkColor),
+            const SizedBox(width: 5),
+            Text(name, style: const TextStyle(fontSize: 13)),
+          ],
         ),
       ),
     );
   }
 
-  // ------------------------------------------------------------------ 题材分类
+  // ------------------------------------------------------------------ 演员栏
 
-  /// 题材分类区块：横向组切换（角色/主題/服裝…）+ 下方 tag 标签云，
-  /// 点击 tag 进入题材影片页；需要网页版 Cookie 时降级为导入提示卡片。
-  Widget _buildGenreSection(BuildContext context) {
-    if (_genreError != null) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: () => showWebCookieImportDialog(context, _client),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: _cardColor,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Theme.of(context).dividerColor),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.lock_outline, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text('题材分类需要网页版登录态，点击导入 Cookie 解锁',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: Theme.of(context).hintColor)),
-                ),
-                Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-    if (_genreGroups.isEmpty) return const SizedBox.shrink();
-    final index =
-        _genreGroupIndex < _genreGroups.length ? _genreGroupIndex : 0;
-    final group = _genreGroups[index];
-    final options = (group['options'] as List?) ?? const [];
+  /// 演员栏：入口卡片（演员页）+ 已订阅演员头像轨道（灰图钉标记）。
+  /// 不展示默认演员——订阅后才会出现在首页。
+  Widget _buildActorSection(BuildContext context) {
+    final subs = context.watch<SubscriptionProvider>().byKind(kSubActor);
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(
-          height: 44,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: _genreGroups.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (context, i) {
-              final g = _genreGroups[i];
-              return Center(
-                child: ChoiceChip(
-                  label: Text((g['name'] as String?) ?? '',
-                      style: const TextStyle(fontSize: 12)),
-                  labelPadding:
-                      const EdgeInsets.symmetric(horizontal: 10),
-                  selected: i == index,
-                  visualDensity: VisualDensity.compact,
-                  onSelected: (_) => setState(() => _genreGroupIndex = i),
-                ),
-              );
-            },
-          ),
-        ),
-        const SizedBox(height: 4),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final o in options)
-                ActionChip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(
-                      (o as Map<String, dynamic>)['name'] as String? ?? '',
-                      style: const TextStyle(fontSize: 12)),
-                  onPressed: () => _push(
-                    context,
-                    GenreScreen(
-                      groupId: (group['web_group_id'] as String?) ?? '',
-                      tagId: (o['id'] as String?) ?? '',
-                      title: (o['name'] as String?) ?? '',
-                    ),
-                  ),
-                ),
-            ],
+          child: _buildSectionEntryCard(
+            context,
+            icon: Icons.face_retouching_natural,
+            iconColor: const Color(0xFFE8506E),
+            title: '全部演员',
+            subtitle: '热门演员 · 演员榜',
+            onTap: () => _push(context, const ActorCatalogScreen()),
           ),
         ),
+        if (subs.isNotEmpty)
+          SizedBox(height: 118, child: _buildActorRail(context)),
       ],
+    );
+  }
+
+  Widget _buildActorRail(BuildContext context) {
+    final subs = context.watch<SubscriptionProvider>().byKind(kSubActor);
+    return ListView.separated(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      itemCount: subs.length,
+      separatorBuilder: (_, __) => const SizedBox(width: 16),
+      itemBuilder: (context, i) {
+        final s = subs[i];
+        final actor = Actor(
+          id: (s['id'] as String?) ?? '',
+          name: (s['name'] as String?) ?? '',
+          avatarUrl: (s['avatar'] as String?),
+        );
+        return _buildActorAvatar(context, actor);
+      },
+    );
+  }
+
+  Widget _buildActorAvatar(BuildContext context, Actor actor) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () {
+        if (actor.id.isNotEmpty) {
+          pushActorScreen(context, actor);
+        } else {
+          _push(context, SearchScreen(initialQuery: actor.name));
+        }
+      },
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                CircleAvatar(
+                  radius: 32,
+                  backgroundColor: _cardColor,
+                  backgroundImage: actor.avatarUrl != null
+                      ? NetworkImage(resolveImageUrl(actor.avatarUrl!))
+                      : null,
+                  onBackgroundImageError:
+                      actor.avatarUrl != null ? (_, __) {} : null,
+                  child: actor.avatarUrl == null
+                      ? const Icon(Icons.person, size: 32)
+                      : null,
+                ),
+                // 灰色图钉：标记订阅演员
+                Positioned(
+                  top: -2,
+                  right: -2,
+                  child: Container(
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).cardColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Theme.of(context).dividerColor),
+                    ),
+                    child: const Icon(Icons.push_pin,
+                        size: 10, color: _subMarkColor),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              actor.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -80,18 +80,18 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   Future<void> _toggleSubscribe() async {
     if (_subToggling) return;
     final subs = context.read<SubscriptionProvider>();
-    final subscribed = subs.isSubscribed(widget.listId);
+    final subscribed = subs.isSubscribed(kSubCollection, widget.listId);
     setState(() => _subToggling = true);
     try {
       if (subscribed) {
-        await subs.unsubscribe(widget.listId);
+        await subs.unsubscribe(kSubCollection, widget.listId);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('已取消订阅')),
           );
         }
       } else {
-        await subs.subscribe(widget.listId, widget.listName,
+        await subs.subscribeCollection(widget.listId, widget.listName,
             moviesCount: widget.moviesCount);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -119,7 +119,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final subscribed = context.watch<SubscriptionProvider>()
-        .isSubscribed(widget.listId);
+        .isSubscribed(kSubCollection, widget.listId);
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.listName.isEmpty ? '合集详情' : widget.listName,

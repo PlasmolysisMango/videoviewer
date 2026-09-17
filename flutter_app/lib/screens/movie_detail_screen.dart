@@ -29,6 +29,13 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   late final JavDBClient _client;
   Map<String, dynamic>? _movieData;
   List<Magnet> _magnets = [];
+  // 相似推荐：[{"movie": {...}, "reason": "..."}]，异步拉取失败静默
+  List<Map<String, dynamic>> _similar = [];
+  // JavDB 用户评论：失败静默，排序切换后重拉
+  List<Map<String, dynamic>> _reviews = [];
+  int _reviewTotal = 0;
+  String _reviewSort = 'hotly';
+  bool _reviewsLoading = false;
   Map<String, dynamic>? _avData;
   // 默认变体列表（惰性加载：不探测直接展示，点击播放才解析）
   static const _defaultVariants = ['uncensored', 'cnsub', 'normal'];
@@ -49,6 +56,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     super.initState();
     _client = JavDBClient(BackendLauncher.baseUrl);
     _loadMovie();
+    _loadSimilar();
+    _loadReviews();
     _loadAvData();
     _loadSources();
   }
@@ -107,6 +116,22 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         _isLoading = false;
       });
       AppLogger.error('Failed to load movie', e);
+    }
+  }
+
+  /// 相似推荐：与详情主内容并行拉取；失败静默，仅隐藏区块。
+  Future<void> _loadSimilar() async {
+    try {
+      final result = await _client.getSimilarMovies(widget.movieId);
+      final list = (result['similar'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .toList() ??
+          const <Map<String, dynamic>>[];
+      if (!mounted) return;
+      setState(() => _similar = list);
+      AppLogger.info('Similar movies loaded: ${list.length}');
+    } catch (e) {
+      AppLogger.warning('Failed to load similar movies: $e');
     }
   }
 
@@ -676,6 +701,240 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                     ),
                   ),
                 )),
+          const SizedBox(height: 24),
+          // 相似推荐（同女演员 / 同系列 / 同题材，后端聚合打分）
+          _buildSimilarSection(),
+          const SizedBox(height: 24),
+          // JavDB 用户评论（最热/最新排序）
+          _buildReviewsSection(),
+        ],
+      ),
+    );
+  }
+
+  /// 相似推荐区块：横向海报卡，右上角小徽章标注推荐理由；空结果整块隐藏。
+  Widget _buildSimilarSection() {
+    if (_similar.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('相似推荐',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 216,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: _similar.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (context, i) {
+              final item = _similar[i];
+              final movie = Movie.fromJson(
+                  item['movie'] as Map<String, dynamic>? ?? const {});
+              final reason = item['reason'] as String? ?? '';
+              return SizedBox(
+                width: 112,
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: MovieGridCard(movie: movie)),
+                    if (reason.isNotEmpty)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Tooltip(
+                          message: reason,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 92),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                reason,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 9),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// JavDB 评论：与详情主内容并行拉取；失败或无评论整块隐藏。
+  Future<void> _loadReviews() async {
+    setState(() => _reviewsLoading = true);
+    try {
+      final result =
+          await _client.getReviews(widget.movieId, sort: _reviewSort);
+      final list = (result['reviews'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .toList() ??
+          const <Map<String, dynamic>>[];
+      if (!mounted) return;
+      setState(() {
+        _reviews = list;
+        // app API 的 total 不可靠（可能为 0），取两者较大值保底展示数量
+        _reviewTotal =
+            ((result['total'] as num?)?.toInt() ?? 0) > list.length
+                ? (result['total'] as num).toInt()
+                : list.length;
+        _reviewsLoading = false;
+      });
+    } catch (e) {
+      AppLogger.warning('Failed to load reviews: $e');
+      if (!mounted) return;
+      setState(() => _reviewsLoading = false);
+    }
+  }
+
+  /// 评论区块：标题 + 最热/最新切换 + 评论卡片列；无数据整块隐藏。
+  Widget _buildReviewsSection() {
+    if (_reviews.isEmpty && !_reviewsLoading) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(_reviewTotal > 0 ? '评论 ($_reviewTotal)' : '评论',
+                style: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.bold)),
+            const Spacer(),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'hotly', label: Text('最热')),
+                ButtonSegment(value: 'latest', label: Text('最新')),
+              ],
+              selected: {_reviewSort},
+              showSelectedIcon: false,
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              onSelectionChanged: (sel) {
+                if (sel.first == _reviewSort) return;
+                setState(() {
+                  _reviewSort = sel.first;
+                });
+                _loadReviews();
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (_reviewsLoading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(12),
+              child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          )
+        else
+          ..._reviews.map(_buildReviewCard),
+      ],
+    );
+  }
+
+  /// 单条评论卡：作者/评分/内容/日期与点赞数。
+  Widget _buildReviewCard(Map<String, dynamic> review) {
+    final author = review['author'] as String? ?? '匿名';
+    final content = review['content'] as String? ?? '';
+    final date = review['date'] as String? ?? '';
+    final rating = (review['rating'] as num?)?.toDouble() ?? 0;
+    final likes = (review['likes'] as num?)?.toInt() ?? 0;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: cardDecoration(context),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 12,
+                backgroundColor: Theme.of(context)
+                    .colorScheme
+                    .primary
+                    .withOpacity(0.15),
+                child: Text(
+                    author.isNotEmpty ? author.substring(0, 1) : '?',
+                    style: const TextStyle(fontSize: 11)),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(author,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 13)),
+              ),
+              if (rating > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.orange,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '★ ${rating.toStringAsFixed(1)}',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700),
+                  ),
+                ),
+            ],
+          ),
+          if (content.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(content,
+                style: const TextStyle(fontSize: 13, height: 1.5)),
+          ],
+          if (date.isNotEmpty || likes > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                children: [
+                  if (date.isNotEmpty)
+                    Text(date,
+                        style: TextStyle(
+                            color: Theme.of(context).hintColor,
+                            fontSize: 11)),
+                  const Spacer(),
+                  if (likes > 0)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.thumb_up_alt_outlined,
+                            size: 13, color: Theme.of(context).hintColor),
+                        const SizedBox(width: 4),
+                        Text('$likes',
+                            style: TextStyle(
+                                color: Theme.of(context).hintColor,
+                                fontSize: 11)),
+                      ],
+                    ),
+                ],
+              ),
+            ),
         ],
       ),
     );

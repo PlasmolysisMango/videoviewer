@@ -1,78 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../providers/subscription_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import 'login_screen.dart';
 
-/// 弹出网页版 Cookie 导入对话框：题材浏览（/tags?c{N} 页面）需要网页登录态，
-/// 而网页登录表单带图形验证码无法自动化，只能由用户从浏览器复制 Cookie 导入。
-Future<void> showWebCookieImportDialog(
-    BuildContext context, JavDBClient client) async {
-  final controller = TextEditingController();
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('导入网页版 Cookie'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            '题材分类走 JavDB 网页版页面，需要登录态。请在浏览器登录 javdb.com 后，'
-            '从开发者工具复制请求头里的整段 Cookie 粘贴到这里。',
-            style: TextStyle(fontSize: 13),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: controller,
-            maxLines: 4,
-            decoration: const InputDecoration(
-              hintText: '粘贴 Cookie ...',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext, false),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(dialogContext, true),
-          child: const Text('导入'),
-        ),
-      ],
-    ),
-  );
-  if (confirmed != true || !context.mounted) return;
-  var cookie = controller.text.trim();
-  if (cookie.toLowerCase().startsWith('cookie:')) {
-    cookie = cookie.substring(7).trim();
-  }
-  if (cookie.isEmpty) return;
-  try {
-    await client.setWebCookie(cookie);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cookie 已导入')),
-      );
-    }
-  } catch (e) {
-    AppLogger.error('Failed to import web cookie', e);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red),
-      );
-    }
-  }
-}
-
-/// 题材影片页：按 tag 组（角色/主題/服裝…）浏览影片，
-/// 数据走网页版 /tags?c{group}={tag}，未导入网页版 Cookie 时提示导入。
+/// 题材影片页：按 tag 组（角色/主題/服裝…）浏览影片。
+/// 数据走网页版 /tags?c{group}={tag}，需要网页版登录态（未导入 Cookie 时
+/// 报错信息下提供"登录"入口，Cookie 导入已合并进登录页）；
+/// AppBar 的书签按钮把当前题材订阅到首页。
 class GenreScreen extends StatefulWidget {
   const GenreScreen({
     super.key,
@@ -96,6 +36,7 @@ class _GenreScreenState extends State<GenreScreen> {
   MovieViewMode _viewMode = MovieViewMode.list;
   String _sort = '';
   bool _isLoading = true;
+  bool _subToggling = false;
   String? _error;
   int _page = 1;
   int _maxPage = 1;
@@ -104,6 +45,7 @@ class _GenreScreenState extends State<GenreScreen> {
   void initState() {
     super.initState();
     _client = JavDBClient(BackendLauncher.baseUrl);
+    context.read<SubscriptionProvider>().ensureLoaded();
     _loadMovies();
   }
 
@@ -138,6 +80,34 @@ class _GenreScreenState extends State<GenreScreen> {
     }
   }
 
+  Future<void> _toggleSubscribe() async {
+    if (_subToggling) return;
+    final subs = context.read<SubscriptionProvider>();
+    final subscribed = subs.isSubscribed(kSubGenre, widget.tagId);
+    setState(() => _subToggling = true);
+    try {
+      if (subscribed) {
+        await subs.unsubscribe(kSubGenre, widget.tagId);
+        _toast('已取消订阅');
+      } else {
+        await subs.subscribeGenre(widget.groupId, widget.tagId, widget.title);
+        _toast('已订阅，可在首页查看');
+      }
+    } catch (e) {
+      AppLogger.error('Failed to toggle genre subscription', e);
+      _toast('操作失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _subToggling = false);
+    }
+  }
+
+  void _toast(String msg, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: error ? Colors.red : null),
+    );
+  }
+
   void _goPage(int page) {
     if (page < 1 || page > _maxPage || page == _page) return;
     _loadMovies(page: page);
@@ -145,6 +115,9 @@ class _GenreScreenState extends State<GenreScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final subscribed = context
+        .watch<SubscriptionProvider>()
+        .isSubscribed(kSubGenre, widget.tagId);
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title.isEmpty ? '题材影片' : widget.title,
@@ -161,6 +134,13 @@ class _GenreScreenState extends State<GenreScreen> {
           ViewModeToggle(
             mode: _viewMode,
             onChanged: (m) => setState(() => _viewMode = m),
+          ),
+          IconButton(
+            icon: subscribed
+                ? const Icon(Icons.bookmark_added, color: Color(0xFFFFD54F))
+                : const Icon(Icons.bookmark_add_outlined),
+            tooltip: subscribed ? '取消订阅题材' : '订阅题材到首页',
+            onPressed: _subToggling ? null : _toggleSubscribe,
           ),
         ],
       ),
@@ -183,6 +163,8 @@ class _GenreScreenState extends State<GenreScreen> {
     );
   }
 
+  /// 加载失败视图：登录墙错误（未导入网页版 Cookie）在下方面给"登录"入口，
+  /// 从登录页导入 Cookie 返回后自动重试。
   Widget _buildError(BuildContext context) {
     return Center(
       child: Column(
@@ -202,10 +184,13 @@ class _GenreScreenState extends State<GenreScreen> {
               child: const Text('重试'),
             ),
             const SizedBox(width: 12),
-            FilledButton.tonal(
-              onPressed: () => showWebCookieImportDialog(context, _client)
-                  .then((_) => _loadMovies(page: _page)),
-              child: const Text('导入网页版 Cookie'),
+            FilledButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+              ).then((_) => _loadMovies(page: _page)),
+              icon: const Icon(Icons.login, size: 18),
+              label: const Text('登录'),
             ),
           ]),
         ],

@@ -1,6 +1,75 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../api/client.dart';
 import '../providers/auth_provider.dart';
+import '../services/backend_launcher.dart';
+import '../services/logger.dart';
+
+/// 弹出网页版 Cookie 导入对话框：题材浏览（/tags?c{N} 页面）需要网页登录态，
+/// 而网页登录表单带图形验证码无法自动化，只能由用户从浏览器复制 Cookie 导入。
+/// Cookie 导入入口统一收在登录页。
+Future<void> showWebCookieImportDialog(
+    BuildContext context, JavDBClient client) async {
+  final controller = TextEditingController();
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('导入网页版 Cookie'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '题材分类等网页版页面需要登录态。请在浏览器登录 javdb.com 后，'
+            '从开发者工具复制请求头里的整段 Cookie 粘贴到这里。',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: controller,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              hintText: '粘贴 Cookie ...',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('导入'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  var cookie = controller.text.trim();
+  if (cookie.toLowerCase().startsWith('cookie:')) {
+    cookie = cookie.substring(7).trim();
+  }
+  if (cookie.isEmpty) return;
+  try {
+    await client.setWebCookie(cookie);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cookie 已导入')),
+      );
+    }
+  } catch (e) {
+    AppLogger.error('Failed to import web cookie', e);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+}
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -129,6 +198,14 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         )
                       : const Text('登录'),
+                ),
+                const SizedBox(height: 12),
+                // 网页版 Cookie 导入：解锁题材分类等需要网页登录态的页面。
+                OutlinedButton.icon(
+                  onPressed: () => showWebCookieImportDialog(
+                      context, JavDBClient(BackendLauncher.baseUrl)),
+                  icon: const Icon(Icons.cookie_outlined, size: 18),
+                  label: const Text('导入网页版 Cookie'),
                 ),
               ],
             ),

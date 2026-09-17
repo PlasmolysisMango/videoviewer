@@ -74,6 +74,40 @@ class JavDBClient {
     }
   }
 
+  /// 相似推荐：/api/similar/{id}。后端按同女演员 / 同系列 / 同题材
+  /// 三维度并行聚合打分；未导入网页版 Cookie 时题材维度静默跳过。
+  /// 返回 {"similar": [{"movie": {...}, "reason": "..."}]}。
+  Future<Map<String, dynamic>> getSimilarMovies(String movieId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/similar/$movieId'),
+      headers: _headers,
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Get similar movies failed');
+    }
+  }
+
+  /// JavDB 用户评论：/api/reviews/{id}?page=&sort=hotly|latest。
+  /// 走 app API（公开可用），返回 {"reviews": [...], "current_page": n, "total": n}。
+  Future<Map<String, dynamic>> getReviews(String movieId,
+      {int page = 1, String sort = 'hotly'}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/reviews/$movieId?page=$page&sort=$sort'),
+      headers: _headers,
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Get reviews failed');
+    }
+  }
+
   Future<Map<String, dynamic>> getRanking(String kind,
       {String? category,
       String? period,
@@ -154,7 +188,7 @@ class JavDBClient {
     }
   }
 
-  /// 获取已订阅合集列表：/api/subscriptions
+  /// 获取已订阅条目（合集/题材/演员混合，按 kind 字段区分）：/api/subscriptions
   Future<List<Map<String, dynamic>>> getSubscriptions() async {
     final response = await http.get(Uri.parse('$baseUrl/api/subscriptions'),
         headers: _headers);
@@ -171,16 +205,19 @@ class JavDBClient {
     }
   }
 
-  /// 订阅合集（重复订阅幂等）：POST /api/subscriptions
-  Future<void> subscribeList(String listId, String name,
-      {int moviesCount = 0}) async {
+  /// 新增订阅：kind 为 collection / genre / actor；重复订阅时刷新元数据。
+  Future<void> subscribe(String kind, String id, String name,
+      {int moviesCount = 0, String? avatar, String? group}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/subscriptions'),
       headers: _headers,
       body: jsonEncode({
-        'id': listId,
+        'id': id,
         'name': name,
-        'movies_count': moviesCount,
+        'kind': kind,
+        if (moviesCount > 0) 'movies_count': moviesCount,
+        if (avatar != null && avatar.isNotEmpty) 'avatar': avatar,
+        if (group != null && group.isNotEmpty) 'group': group,
       }),
     );
     if (response.statusCode != 200) {
@@ -189,12 +226,11 @@ class JavDBClient {
     }
   }
 
-  /// 取消订阅合集：DELETE /api/subscriptions/{id}
-  Future<void> unsubscribeList(String listId) async {
-    final response = await http.delete(
-      Uri.parse('$baseUrl/api/subscriptions/$listId'),
-      headers: _headers,
-    );
+  /// 取消订阅：DELETE /api/subscriptions/{id}?kind=
+  Future<void> unsubscribe(String kind, String id) async {
+    final uri = Uri.parse('$baseUrl/api/subscriptions/$id')
+        .replace(queryParameters: {'kind': kind});
+    final response = await http.delete(uri, headers: _headers);
     if (response.statusCode != 200) {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'Unsubscribe failed');
