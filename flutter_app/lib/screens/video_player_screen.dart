@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:video_player/video_player.dart';
 
 import '../api/models.dart';
 import '../services/logger.dart';
+import '../services/player_engine.dart';
 import '../widgets/player_control_bar.dart';
 import '../widgets/player_gestures.dart';
 
@@ -26,7 +26,7 @@ class VideoPlayerScreen extends StatefulWidget {
 class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   late List<VideoStream> _streams;
   int _current = 0;
-  VideoPlayerController? _controller;
+  PlayerEngine? _controller;
   Duration? _seekPending;
 
   bool _playing = false;
@@ -59,29 +59,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     if (stream.referer != null && stream.referer!.isNotEmpty) {
       headers['Referer'] = stream.referer!;
     }
-    final c = VideoPlayerController.networkUrl(
-      Uri.parse(stream.url),
-      httpHeaders: headers,
-    );
-    _controller = c;
-    await old?.dispose();
 
     try {
       AppLogger.info('Initializing video: ${stream.url}');
-      await c.initialize();
-      if (!mounted) return;
-      c.setVolume(_volume);
-      c.setPlaybackSpeed(_rate);
-      c.addListener(_onPlayerTick);
+      final c = await createPlayerEngine(url: stream.url, headers: headers);
+      if (!mounted) {
+        await c.dispose();
+        await old?.dispose();
+        return;
+      }
+      _controller = c;
+      c.onTick = _onPlayerTick;
+      await old?.dispose();
+      await c.setVolume(_volume);
+      await c.setRate(_rate);
       setState(() => _loading = false);
       final seek = _seekPending;
       if (seek != null) {
-        await c.seekTo(seek);
+        await c.seek(seek);
         _seekPending = null;
       }
-      c.play();
+      await c.play();
     } catch (e) {
       AppLogger.error('Failed to initialize video', e);
+      await old?.dispose();
       if (mounted) {
         setState(() {
           _error = e.toString();
@@ -92,12 +93,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   void _onPlayerTick() {
-    final v = _controller?.value;
-    if (v == null || !mounted) return;
+    final e = _controller;
+    if (e == null || !mounted) return;
     setState(() {
-      _position = v.position;
-      _duration = v.duration;
-      _playing = v.isPlaying;
+      _position = e.position;
+      _duration = e.duration;
+      _playing = e.isPlaying;
     });
   }
 
@@ -110,7 +111,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       DeviceOrientation.landscapeRight,
     ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    _controller?.removeListener(_onPlayerTick);
+    _controller?.onTick = null;
     _controller?.dispose();
     super.dispose();
   }
@@ -119,8 +120,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   void _switchQuality(int idx) {
     if (idx == _current || idx < 0 || idx >= _streams.length) return;
-    _seekPending = _controller?.value.position;
-    _controller?.removeListener(_onPlayerTick);
+    _seekPending = _controller?.position;
     setState(() => _current = idx);
     _initController();
   }
@@ -128,26 +128,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   void _togglePlay() {
     final c = _controller;
     if (c == null) return;
-    c.value.isPlaying ? c.pause() : c.play();
+    c.isPlaying ? c.pause() : c.play();
   }
 
   void _seekRelative(double seconds) {
     final c = _controller;
     if (c == null) return;
     final target =
-        c.value.position + Duration(milliseconds: (seconds * 1000).round());
+        c.position + Duration(milliseconds: (seconds * 1000).round());
     final clamped = Duration(
-      milliseconds:
-          target.inMilliseconds.clamp(0, c.value.duration.inMilliseconds),
+      milliseconds: target.inMilliseconds.clamp(0, c.duration.inMilliseconds),
     );
-    c.seekTo(clamped);
+    c.seek(clamped);
   }
 
-  void _seekTo(Duration d) => _controller?.seekTo(d);
+  void _seekTo(Duration d) => _controller?.seek(d);
 
   void _setRate(double r) {
     setState(() => _rate = r);
-    _controller?.setPlaybackSpeed(r);
+    _controller?.setRate(r);
   }
 
   void _setVolume(double v) {
@@ -177,7 +176,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   @override
   Widget build(BuildContext context) {
     final c = _controller;
-    final initialized = c != null && c.value.isInitialized && _error == null;
+    final initialized = c != null && c.initialized && _error == null;
 
     // 全屏模式：无 AppBar，视频填满屏幕，控制栏浮层
     if (_isFullscreen) {
@@ -294,24 +293,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   /// 视频画面区：根据是否全屏选择 AspectRatio 或 FittedBox 填满。
-  Widget _buildVideoArea(VideoPlayerController? c, bool initialized) {
+  Widget _buildVideoArea(PlayerEngine? c, bool initialized) {
     if (!initialized || c == null) return const SizedBox.shrink();
     if (_isFullscreen) {
-      // 全屏：FittedBox cover 填满屏幕，保持比例裁切多余部分
-      return FittedBox(
-        fit: BoxFit.cover,
-        child: SizedBox(
-          width: c.value.size.width,
-          height: c.value.size.height,
-          child: VideoPlayer(c),
-        ),
-      );
+      final size = c.videoSize;
+      if (size.width > 0 && size.height > 0) {
+        // 全屏：FittedBox cover 填满屏幕，保持比例裁切多余部分
+        return FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: size.width,
+            height: size.height,
+            child: c.buildView(),
+          ),
+        );
+      }
+      // 分辨率未知：直接铺满由引擎内部 contain 适配
+      return SizedBox.expand(child: c.buildView());
     }
     // 普通模式：AspectRatio 保持比例
     return Center(
       child: AspectRatio(
-        aspectRatio: c.value.aspectRatio,
-        child: VideoPlayer(c),
+        aspectRatio: c.aspectRatio,
+        child: c.buildView(),
       ),
     );
   }

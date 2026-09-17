@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+import 'pid.dart';
+
 /// BackendLauncher manages the Go HTTP server lifecycle.
 ///
 /// On Android: Go server runs in the same process (via gomobile)
@@ -165,6 +167,11 @@ class BackendLauncher {
     }
     if (downloadDir.isNotEmpty) {
       args.addAll(['-dl-dir', downloadDir]);
+    }
+    // 父进程看门狗：主应用退出（含被强杀）后 server 自杀，避免残留进程。
+    final parent = currentProcessId();
+    if (parent > 0) {
+      args.addAll(['-parent', '$parent']);
     }
 
     _windowsProcess = await Process.start(

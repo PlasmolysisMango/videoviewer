@@ -19,7 +19,11 @@ func main() {
 	cookie := flag.String("cookie", os.Getenv("JAVDB_COOKIE"), "Web session cookie (or set JAVDB_COOKIE)")
 	dlDir := flag.String("dl-dir", os.Getenv("JAVDB_DL_DIR"), "Download directory (or set JAVDB_DL_DIR)")
 	proxy := flag.String("proxy", os.Getenv("HTTP_PROXY"), "HTTP/SOCKS5 proxy URL (e.g., http://127.0.0.1:7890 or socks5://127.0.0.1:7891)")
+	parent := flag.Uint64("parent", 0, "Parent process PID; exit when it dies (Windows launcher sets this)")
 	flag.Parse()
+
+	// 父进程看门狗：桌面端主应用退出后同步退出，避免 server 残留。
+	watchParent(*parent)
 
 	cfg := goserver.Config{
 		Addr:        *addr,

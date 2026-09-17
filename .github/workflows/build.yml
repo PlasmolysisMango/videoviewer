@@ -12,8 +12,9 @@ env:
   FLUTTER_VERSION: '3.24.0'
 
 jobs:
-  # Build Go HTTP Server for Windows
-  build-server-windows:
+  # Build the Windows release: Flutter app with the Go server binary placed
+  # alongside it in the same folder (single artifact, ready to run).
+  build-windows:
     runs-on: windows-2022
     steps:
       - name: Checkout code
@@ -25,78 +26,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Build Windows server
-        run: |
-          go build -ldflags="-s -w" -o javdbserver.exe ./cmd/javdbserver
-      
-      - name: Upload Windows server
-        uses: actions/upload-artifact@v4
-        with:
-          name: javdbserver-windows
-          path: javdbserver.exe
-
-  # Build gomobile AAR for Android (embedded Go server)
-  build-gomobile-android:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 11076708
-          packages: 'platform-tools'
-
-      - name: Cache gomobile
-        id: cache-gomobile
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/bin/gomobile
-            ~/go/bin/gobind
-          key: ${{ runner.os }}-gomobile-${{ hashFiles('go.sum') }}
-
-      - name: Install gomobile
-        if: steps.cache-gomobile.outputs.cache-hit != 'true'
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-
-      - name: Add Go bin to PATH
-        run: echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-
-      - name: Build gomobile AAR
-        run: |
-          mkdir -p flutter_app/android/app/libs
-          gomobile bind \
-            -target=android/arm64 \
-            -androidapi=21 \
-            -o=flutter_app/android/app/libs/goserver.aar \
-            ./pkg/goserver
-
-      - name: Upload gomobile AAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: gomobile-aar
-          path: flutter_app/android/app/libs/goserver.aar
-
-  # Build Flutter app for Windows
-  build-flutter-windows:
-    runs-on: windows-2022
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        run: go build -ldflags="-s -w" -o javdbserver.exe ./cmd/javdbserver
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -112,19 +42,45 @@ jobs:
         working-directory: ./flutter_app
         run: flutter build windows --release
 
-      - name: Upload Windows app
+      - name: Bundle server into the app folder
+        shell: pwsh
+        run: >
+          Copy-Item javdbserver.exe
+          flutter_app/build/windows/x64/runner/Release/javdbserver.exe
+
+      - name: Upload Windows bundle (app + server)
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-app-windows
+          name: videoviewer-windows
           path: flutter_app/build/windows/x64/runner/Release/
 
-  # Build Flutter app for Android (with embedded Go server)
-  build-flutter-android:
+  # Build the Flutter app for Android with the Go server embedded via gomobile.
+  # The AAR is built in-place and never published as a standalone artifact.
+  build-android:
     runs-on: ubuntu-latest
-    needs: [build-gomobile-android]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Build gomobile AAR (embedded, not published)
+        run: |
+          mkdir -p flutter_app/android/app/libs
+          gomobile bind \
+            -target=android/arm64 \
+            -androidapi=21 \
+            -o=flutter_app/android/app/libs/goserver.aar \
+            ./pkg/goserver
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -151,12 +107,6 @@ jobs:
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "build-tools;33.0.1" \
             "platforms;android-34"
-
-      - name: Download gomobile AAR
-        uses: actions/download-artifact@v4
-        with:
-          name: gomobile-aar
-          path: flutter_app/android/app/libs/
 
       - name: Setup Android signing
         run: |
@@ -189,22 +139,18 @@ jobs:
 
   # Create release with all artifacts
   create-release:
-    needs: [build-server-windows, build-flutter-windows, build-flutter-android]
+    needs: [build-windows, build-android]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
       - name: Create release archives
         run: |
-          # Windows release (Flutter app + server binary)
+          # Windows release: single folder with the Flutter app + javdbserver.exe
           mkdir -p release/windows
-          cp javdbserver-windows/javdbserver.exe release/windows/
-          cp -r flutter-app-windows/* release/windows/
+          cp -r videoviewer-windows/* release/windows/
           cd release/windows && zip -r ../../videoviewer-windows-x64.zip . && cd ../..
 
           # Android release (Flutter app with embedded Go server)

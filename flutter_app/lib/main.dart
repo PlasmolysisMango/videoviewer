@@ -15,6 +15,16 @@ import 'services/logger.dart';
 
 String? _serverStartError;
 
+/// CJK 字体回退链：Windows 用微软雅黑，macOS/Windows/Linux 各取常见中文字体，
+/// 逐个尝试直到命中，不存在的项被忽略。
+const _cjkFontFallback = [
+  'Microsoft YaHei',
+  'PingFang SC',
+  'Noto Sans CJK SC',
+  'Source Han Sans SC',
+  'SimHei',
+];
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -34,6 +44,20 @@ void main() async {
   }, (error, stack) {
     AppLogger.error('Zone error', error, stack);
   });
+
+  // 主应用退出时同步停止后端 server（Windows 下为独立进程）。
+  WidgetsBinding.instance.addObserver(_BackendShutdownObserver());
+}
+
+/// 监听应用生命周期：detached（窗口关闭/进程退出）时停止后端。
+/// 服务端另有 -parent 看门狗兜底：主进程无论怎样退出，server 都会自杀。
+class _BackendShutdownObserver extends WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      BackendLauncher.stop();
+    }
+  }
 }
 
 Future<void> _runApp() async {
@@ -74,15 +98,19 @@ class MyApp extends StatelessWidget {
         builder: (context, themeProvider, _) => MaterialApp(
           title: 'JavDB',
           debugShowCheckedModeBanner: false,
-          // 统一浅色主题（白色背景）；深色模式可由用户手动开启或跟随系统
+          // 统一浅色主题（白色背景）；深色模式可由用户手动开启或跟随系统。
+          // fontFamilyFallback：Windows 默认 Segoe UI 无中文字形，回退到宋体
+          // 等衬线字体显得不自然，显式指定微软雅黑优先。
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
             useMaterial3: true,
+            fontFamilyFallback: _cjkFontFallback,
           ),
           darkTheme: ThemeData(
             colorScheme: ColorScheme.fromSeed(
                 seedColor: Colors.blue, brightness: Brightness.dark),
             useMaterial3: true,
+            fontFamilyFallback: _cjkFontFallback,
           ),
           themeMode: themeProvider.mode,
           initialRoute: '/home',
