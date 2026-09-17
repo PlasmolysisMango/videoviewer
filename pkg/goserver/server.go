@@ -145,6 +145,8 @@ func (s *Server) Start() error {
 	// JavDB endpoints - no auth required for browsing
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/movie/", s.handleMovie)
+	mux.HandleFunc("GET /api/similar/", s.handleSimilar)
+	mux.HandleFunc("GET /api/reviews/", s.handleReviews)
 	mux.HandleFunc("GET /api/ranking/", s.handleRanking)
 	mux.HandleFunc("GET /api/magnets/", s.handleMagnets)
 	mux.HandleFunc("GET /api/tags", s.handleTags)
@@ -152,7 +154,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/web-cookie", s.handleWebCookie)
 	mux.HandleFunc("GET /api/actor/", s.handleActor)
 	mux.HandleFunc("GET /api/actor-movies/", s.handleActorMovies)
-mux.HandleFunc("GET /api/series-movies/", s.handleSeriesMovies)
+	mux.HandleFunc("GET /api/series-movies/", s.handleSeriesMovies)
 	mux.HandleFunc("GET /api/lists/search", s.handleListSearch)
 	mux.HandleFunc("GET /api/lists/", s.handleListMovies)
 	mux.HandleFunc("GET /api/subscriptions", s.handleSubscriptions)

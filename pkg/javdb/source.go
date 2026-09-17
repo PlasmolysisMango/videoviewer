@@ -125,10 +125,10 @@ type Credentials struct {
 
 // ReviewPage is one page of comments.
 type ReviewPage struct {
-	Reviews []Review
-	Current int
-	Total   int
-	Source  string
+	Reviews []Review `json:"reviews"`
+	Current int      `json:"current_page"`
+	Total   int      `json:"total"`
+	Source  string   `json:"-"`
 }
 
 var (

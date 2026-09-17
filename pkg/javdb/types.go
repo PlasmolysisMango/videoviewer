@@ -168,6 +168,14 @@ type Link struct {
 	Kind string `json:"kind,omitempty"`
 }
 
+// TagFilter is one /tags?c{group}={id} coordinate pair (with display name)
+// extracted from a detail page's genre links.
+type TagFilter struct {
+	Group string // c{N} 的 N
+	ID    string // tag id
+	Name  string
+}
+
 // ListSummary is a community list ("影單") card from a list search.
 type ListSummary struct {
 	// ID is the site identifier ("OBNxy") used to fetch the list contents.

@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"videoviewer/pkg/av"
@@ -282,15 +284,17 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSubscriptionDelete serves DELETE /api/subscriptions/{id}.
+// handleSubscriptionDelete serves DELETE /api/subscriptions/{id}?kind=.
+// kind 可选：collection（默认）/ genre / actor，同一 ID 可在不同 kind 下共存。
 func (s *Server) handleSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 || parts[3] == "" {
 		writeError(w, http.StatusBadRequest, "subscription ID required")
 		return
 	}
-	if err := removeSubscription(parts[3]); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	kind := r.URL.Query().Get("kind")
+	if err := removeSubscription(parts[3], kind); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": listSubscriptions()})
@@ -447,6 +451,269 @@ func (s *Server) handleMagnets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"magnets": magnets,
 	})
+}
+
+// handleSimilar serves related-movie recommendations: GET /api/similar/{id}.
+// 相似维度：同一女演员（必须女性，拉其作品列表）、同系列 / 同番号前缀
+// （/series、/video_codes 列表页）、同题材 tag（/tags?c{N} 页面，需网页
+// Cookie，未导入时该维度静默跳过）。并行拉取、按 ID 去重（合并命中原因）、
+// 排除当前影片，返回 {similar: [{movie, reason}]}。
+func (s *Server) handleSimilar(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[3] == "" {
+		writeError(w, http.StatusBadRequest, "movie ID required")
+		return
+	}
+	id := parts[3]
+
+	detail, err := s.javdb.Movie(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	const (
+		perActress   = 4 // 每个女演员取的作品数
+		maxActresses = 2 // 最多参与推荐的女演员数
+		perTag       = 6 // 每个题材取的作品数
+		maxTags      = 2
+		perSeries    = 6
+	)
+
+	type agg struct {
+		movie   javdb.Movie
+		reasons map[string]bool
+		score   int
+	}
+	byID := map[string]*agg{}
+	var mu sync.Mutex
+	add := func(movies []javdb.Movie, reason string, score int) {
+		for _, m := range movies {
+			if m.ID == "" || m.ID == id {
+				continue
+			}
+			a, ok := byID[m.ID]
+			if !ok {
+				a = &agg{movie: m, reasons: map[string]bool{}}
+				byID[m.ID] = a
+			}
+			if !a.reasons[reason] {
+				a.reasons[reason] = true
+				a.score += score
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	// goFetch 并行拉取一个维度的候选；limit 截断每个维度的配额
+	// （app 后端忽略 limit 固定回一页 40 条，会挤占其他维度）。
+	goFetch := func(limit int, fn func() ([]javdb.Movie, string, int)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			movies, reason, score := fn()
+			if len(movies) > limit {
+				movies = movies[:limit]
+			}
+			if len(movies) > 0 {
+				mu.Lock()
+				add(movies, reason, score)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	// 1) 同一女演员（必须女性）：显式 ♀ 优先；详情页全无性别标注时才用
+	// 未标注者兜底（♂ 始终排除）。
+	actresses := make([]javdb.Actor, 0, maxActresses)
+	for _, a := range detail.ActorCredits {
+		if a.Gender == "female" {
+			actresses = append(actresses, a)
+		}
+	}
+	if len(actresses) == 0 {
+		for _, a := range detail.ActorCredits {
+			if a.Gender != "male" {
+				actresses = append(actresses, a)
+			}
+		}
+	}
+	if len(actresses) > maxActresses {
+		actresses = actresses[:maxActresses]
+	}
+	for _, a := range actresses {
+		actor := a
+		goFetch(perActress, func() ([]javdb.Movie, string, int) {
+			res, err := s.javdb.ActorMovies(r.Context(), actor.ID, javdb.Page{Page: 1, Limit: perActress})
+			if err != nil {
+				return nil, "", 0
+			}
+			return res.Movies, "同女演员·" + actor.Name, 5
+		})
+	}
+
+	// 2) 同系列（作品系列优先，否则番号前缀；FC2 前缀范围过泛跳过）
+	if detail.Series != nil && detail.Series.ID != "" {
+		seriesID := detail.Series.ID
+		seriesName := detail.Series.Name
+		goFetch(perSeries, func() ([]javdb.Movie, string, int) {
+			res, err := s.javdb.CategoryMovies(r.Context(), javdb.CategoryQuery{
+				Series: seriesID,
+				Page:   javdb.Page{Page: 1, Limit: perSeries},
+			})
+			if err != nil {
+				return nil, "", 0
+			}
+			return res.Movies, "同系列·" + seriesName, 4
+		})
+	} else if prefix := seriesPrefix(detail.Code); prefix != "" {
+		goFetch(perSeries, func() ([]javdb.Movie, string, int) {
+			res, err := s.javdb.CategoryMovies(r.Context(), javdb.CategoryQuery{
+				VideoCode: prefix,
+				Page:      javdb.Page{Page: 1, Limit: perSeries},
+			})
+			if err != nil {
+				// /video_codes 列表页需要 web 登录态；退回番号前缀搜索
+				// （app API，匿名可用），多取一部以容自身占据首位。
+				if sr, serr := s.javdb.SearchMovies(r.Context(), prefix, javdb.WithPage(1, perSeries+1)); serr == nil {
+					return sr.Movies, "同系列·" + prefix, 3
+				}
+				return nil, "", 0
+			}
+			return res.Movies, "同系列·" + prefix, 3
+		})
+	}
+
+	// 3) 同题材。web 详情链接自带 /tags?c{N}={id} 坐标；app API 详情只有
+	// /tags/{id}，先用题材分组反查补齐 web 筛选组号（TagGroups 匿名可用且有
+	// 缓存）。未导入 web cookie 时该维度会因登录墙静默失败，不影响其余维度。
+	tags := make([]javdb.TagFilter, 0, len(detail.Genres))
+	for _, g := range detail.Genres {
+		group, id := javdb.ParseTagHref(g.Href)
+		if id != "" {
+			tags = append(tags, javdb.TagFilter{Group: group, ID: id, Name: g.Name})
+		}
+	}
+	if groups, err := s.javdb.TagGroups(r.Context(), javdb.CategoryCensored); err == nil {
+		byTag := map[string]string{} // tag id -> web c{N} 组号
+		for _, grp := range groups {
+			web := grp.CategoryID
+			if mapped, ok := javdb.WebTagGroupID[grp.CategoryID]; ok {
+				web = mapped // app API 组名（role/subject…）→ web c{N} 组号
+			}
+			for _, o := range grp.Options {
+				byTag[o.ID] = web
+			}
+		}
+		withGroup := make([]javdb.TagFilter, 0, len(tags))
+		for _, t := range tags {
+			if t.Group == "" {
+				t.Group = byTag[t.ID]
+			}
+			if t.Group != "" {
+				withGroup = append(withGroup, t)
+			}
+		}
+		tags = withGroup
+	} else {
+		withGroup := tags[:0]
+		for _, t := range tags {
+			if t.Group != "" {
+				withGroup = append(withGroup, t)
+			}
+		}
+		tags = withGroup
+	}
+	if len(tags) > maxTags {
+		tags = tags[:maxTags]
+	}
+	for _, t := range tags {
+		tag := t
+		goFetch(perTag, func() ([]javdb.Movie, string, int) {
+			res, err := s.javdb.CategoryMovies(r.Context(), javdb.CategoryQuery{
+				TagIDs: map[string]string{tag.Group: tag.ID},
+				Page:   javdb.Page{Page: 1, Limit: perTag},
+			})
+			if err != nil {
+				return nil, "", 0
+			}
+			return res.Movies, "同题材·" + tag.Name, 2
+		})
+	}
+
+	wg.Wait()
+
+	aggs := make([]*agg, 0, len(byID))
+	for _, a := range byID {
+		aggs = append(aggs, a)
+	}
+	sort.Slice(aggs, func(i, j int) bool {
+		if aggs[i].score != aggs[j].score {
+			return aggs[i].score > aggs[j].score
+		}
+		return aggs[i].movie.ReleaseDate > aggs[j].movie.ReleaseDate
+	})
+
+	const maxResults = 12
+	type similarMovie struct {
+		Movie  javdb.Movie `json:"movie"`
+		Reason string      `json:"reason"`
+	}
+	out := make([]similarMovie, 0, maxResults)
+	for _, a := range aggs {
+		if len(out) >= maxResults {
+			break
+		}
+		reasons := make([]string, 0, len(a.reasons))
+		for r := range a.reasons {
+			reasons = append(reasons, r)
+		}
+		sort.Strings(reasons)
+		out = append(out, similarMovie{Movie: a.movie, Reason: strings.Join(reasons, " / ")})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"similar": out})
+}
+
+// seriesPrefix extracts the letter prefix of a code ("SONE-340" -> "SONE").
+// 仅保留 2–6 个纯字母的前缀，FC2 等过泛前缀返回空。
+func seriesPrefix(code string) string {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if i := strings.IndexByte(code, '-'); i > 0 {
+		code = code[:i]
+	}
+	if len(code) < 2 || len(code) > 6 || code == "FC2" {
+		return ""
+	}
+	for _, r := range code {
+		if r < 'A' || r > 'Z' {
+			return ""
+		}
+	}
+	return code
+}
+
+// handleReviews serves one page of JavDB user comments:
+// GET /api/reviews/{id}?page=1&sort=hotly|latest。走 app API（公开可用）。
+func (s *Server) handleReviews(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[3] == "" {
+		writeError(w, http.StatusBadRequest, "movie ID required")
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	res, err := s.javdb.Reviews(r.Context(), javdb.ReviewQuery{
+		MovieID: parts[3],
+		Sort:    javdb.SortBy(r.URL.Query().Get("sort")),
+		Page:    javdb.Page{Page: page, Limit: 10},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {

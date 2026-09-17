@@ -107,7 +107,8 @@ func parseMovieItem(item *goquery.Selection, pageNum int) (Movie, bool) {
 			m.CanPlay = true
 		}
 		if !isListingBadge(text) {
-			m.Tags = append(m.Tags, text)
+			// 卡片角标题材名转简体展示。
+			m.Tags = append(m.Tags, ToSimplified(text))
 		}
 	})
 

@@ -100,7 +100,8 @@ func (m apiMovie) toMovie(site string) Movie {
 	}
 	for _, t := range m.Tags {
 		if t.Name != "" {
-			mv.Tags = append(mv.Tags, t.Name)
+			// 题材名统一转简体展示（繁体源：JavDB 网页/app API）。
+			mv.Tags = append(mv.Tags, ToSimplified(t.Name))
 		}
 	}
 	for _, a := range parseActorNames(m.Actors) {
@@ -142,7 +143,7 @@ func (m apiMovieDTO) toDetail(site string) *Detail {
 		d.Directors = append(d.Directors, Link{Name: m.DirectorName, ID: id, Href: "/directors/" + id, Kind: "director"})
 	}
 	for _, t := range m.Tags {
-		d.Genres = append(d.Genres, Link{Name: t.Name, ID: t.idString(), Href: "/tags/" + t.idString(), Kind: "tag"})
+		d.Genres = append(d.Genres, Link{Name: ToSimplified(t.Name), ID: t.idString(), Href: "/tags/" + t.idString(), Kind: "tag"})
 	}
 	for _, a := range parseActorNames(m.Actors) {
 		d.ActorCredits = append(d.ActorCredits, a)
@@ -302,9 +303,9 @@ type apiTagGroup struct {
 }
 
 func (g apiTagGroup) toGroup() TagGroup {
-	out := TagGroup{CategoryID: g.CategoryID, Name: g.Category}
+	out := TagGroup{CategoryID: g.CategoryID, Name: ToSimplified(g.Category)}
 	for _, t := range g.Tags {
-		out.Options = append(out.Options, TagOption{Name: t.Name, ID: t.idString()})
+		out.Options = append(out.Options, TagOption{Name: ToSimplified(t.Name), ID: t.idString()})
 	}
 	return out
 }

@@ -286,7 +286,7 @@ func TestWebTagGroups(t *testing.T) {
 		t.Fatalf("groups: %+v", groups)
 	}
 	g := groups[0]
-	if g.Name != "類別" || g.CategoryID != "4" {
+	if g.Name != "类别" || g.CategoryID != "4" {
 		t.Fatalf("group header: %+v", g)
 	}
 	if len(g.Options) != 3 || g.Options[0].ID != "abc" || g.Options[1].ID != "151" || g.Options[2].ID != "15" {

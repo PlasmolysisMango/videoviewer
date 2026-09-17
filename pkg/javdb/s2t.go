@@ -515,3 +515,33 @@ func toTraditional(s string) string {
 	}
 	return string(out)
 }
+
+// t2s is the reverse of s2t (traditional char -> simplified), built once at
+// init. A few traditional variants share one simplified form and vice versa;
+// the last mapping wins, which is fine for display purposes (tags, names).
+var t2s = func() map[rune]rune {
+	m := make(map[rune]rune, len(s2t))
+	for s, t := range s2t {
+		m[t] = s
+	}
+	return m
+}()
+
+// ToSimplified rewrites traditional Chinese chars to simplified ones, leaving
+// any other rune (kana, latin, digits) untouched. JavDB serves traditional
+// Chinese genre names ("癡女", "高校生"); the app displays simplified
+// ("痴女", "高校生").
+func ToSimplified(s string) string {
+	out := []rune(s)
+	changed := false
+	for i, r := range out {
+		if t, ok := t2s[r]; ok {
+			out[i] = t
+			changed = true
+		}
+	}
+	if !changed {
+		return s
+	}
+	return string(out)
+}

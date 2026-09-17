@@ -397,6 +397,15 @@ func (c *Client) Movie(ctx context.Context, idOrCode string) (*Detail, error) {
 			detail, err = c.detailByID(ctx, m.ID)
 		}
 	}
+	if detail != nil {
+		// 题材等显示名统一转简体（筛选按 id，名称仅展示；转换幂等）。
+		for i := range detail.Genres {
+			detail.Genres[i].Name = ToSimplified(detail.Genres[i].Name)
+		}
+		for i := range detail.Tags {
+			detail.Tags[i] = ToSimplified(detail.Tags[i])
+		}
+	}
 	return detail, err
 }
 
@@ -625,7 +634,15 @@ func (c *Client) TagGroups(ctx context.Context, scope Category) ([]TagGroup, err
 	if err != nil {
 		return nil, err
 	}
-	return v.([]TagGroup), nil
+	groups := v.([]TagGroup)
+	// 组名与 tag 名统一转简体（web/app 源均返回繁体）。
+	for gi := range groups {
+		groups[gi].Name = ToSimplified(groups[gi].Name)
+		for oi := range groups[gi].Options {
+			groups[gi].Options[oi].Name = ToSimplified(groups[gi].Options[oi].Name)
+		}
+	}
+	return groups, nil
 }
 
 // ---------------------------------------------------------------------------

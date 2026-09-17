@@ -666,7 +666,7 @@ func (b *webBackend) TagGroups(ctx context.Context, scope Category) ([]TagGroup,
 		return nil, err
 	}
 	var group TagGroup
-	group.Name = "類別"
+	group.Name = "类别"
 	doc.Find("a[href^='/tags']").Each(func(_ int, s *goquery.Selection) {
 		href, _ := s.Attr("href")
 		name := strings.TrimSpace(s.Text())
@@ -677,7 +677,7 @@ func (b *webBackend) TagGroups(ctx context.Context, scope Category) ([]TagGroup,
 		if group.CategoryID == "" {
 			group.CategoryID = categoryID
 		}
-		group.Options = append(group.Options, TagOption{Name: name, ID: id})
+		group.Options = append(group.Options, TagOption{Name: ToSimplified(name), ID: id})
 	})
 	if len(group.Options) == 0 {
 		return nil, fmt.Errorf("%w: genres on web", ErrEmptyResult)
@@ -699,6 +699,29 @@ func tagHrefID(href string) (categoryID, tagID string) {
 		return "", ""
 	}
 	return "", HrefID(href)
+}
+
+// ParseTagHref reads the c{N}={id} filter coordinates out of a /tags?... href
+// ("/tags?c2=12" -> "2", "12"). Returns empty strings for other href shapes.
+func ParseTagHref(href string) (group, id string) {
+	return tagHrefID(href)
+}
+
+// TagFilters returns the detail page's genre links as tag filter coordinates,
+// ready for CategoryQuery.TagIDs. Links without c{N} coordinates are skipped.
+func (d *Detail) TagFilters() []TagFilter {
+	if d == nil {
+		return nil
+	}
+	var out []TagFilter
+	for _, g := range d.Genres {
+		group, id := ParseTagHref(g.Href)
+		if group == "" || id == "" {
+			continue
+		}
+		out = append(out, TagFilter{Group: group, ID: id, Name: g.Name})
+	}
+	return out
 }
 
 func sortedKeys[V any](m map[string]V) []string {
