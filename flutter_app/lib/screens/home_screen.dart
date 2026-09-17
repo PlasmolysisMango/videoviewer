@@ -100,24 +100,33 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 热门推荐池：随机 1 个订阅合集 + 1 个 TOP250 切面（无订阅时取
-  /// 2 个 TOP250 切面），合并去重洗牌，每次进入首页/下拉刷新都不同。
-  /// TOP250 需要登录，失败时回退热播榜，保证首页总有内容。
+  /// 热门推荐池：TOP250 全部榜单切面（总榜/年度/类型）并集为底池，
+  /// 叠加全部订阅（合集/题材/演员）的影片，合并去重洗牌，每次进入
+  /// 首页/下拉刷新都不同。各源独立容错：单个失败只缩池；全空时
+  /// 回退热播榜，保证首页总有内容。
   Future<List<Movie>> _recommendFromPool() async {
     final provider = context.read<SubscriptionProvider>();
     await provider.ensureLoaded();
-    final subs = [...provider.byKind(kSubCollection)]..shuffle();
-    final facets = [..._top250Facets]..shuffle();
+    final requests = <Future<Map<String, dynamic>>>[
+      // 底池：TOP250 所有榜单切面
+      for (final (year, vtype) in _top250Facets)
+        _safeMovies(() => _client.getRanking('top250',
+            year: year, vtype: vtype, limit: 20)),
+      // 订阅合集
+      for (final s in provider.byKind(kSubCollection))
+        _safeMovies(() =>
+            _client.getListMovies((s['id'] as String?) ?? '', limit: 20)),
+      // 订阅题材（group 为 web 筛选组编号，id 为 tag ID）
+      for (final s in provider.byKind(kSubGenre))
+        _safeMovies(() => _client.getGenreMovies(
+            (s['group'] as String?) ?? '', (s['id'] as String?) ?? '',
+            limit: 20)),
+      // 订阅演员
+      for (final s in provider.byKind(kSubActor))
+        _safeMovies(
+            () => _client.actorMovies((s['id'] as String?) ?? '', limit: 20)),
+    ];
     try {
-      final requests = <Future<Map<String, dynamic>>>[
-        if (subs.isNotEmpty) ...[
-          _subMovies((subs.first['id'] as String?) ?? ''),
-          _client.getRanking('top250',
-              year: facets[0].$1, vtype: facets[0].$2, limit: 20),
-        ] else
-          for (final (year, vtype) in facets.take(2))
-            _client.getRanking('top250', year: year, vtype: vtype, limit: 20),
-      ];
       final results = await Future.wait(requests);
       final pool = <String, Movie>{};
       for (final r in results) {
@@ -143,12 +152,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 单个订阅合集的影片：失败返回空结构，不影响 TOP250 部分。
-  Future<Map<String, dynamic>> _subMovies(String listId) async {
+  /// 单个推荐源的容错包装：失败返回空结构，只缩池不影响其余来源。
+  Future<Map<String, dynamic>> _safeMovies(
+      Future<Map<String, dynamic>> Function() fetch) async {
     try {
-      return await _client.getListMovies(listId, limit: 20);
+      return await fetch();
     } catch (e) {
-      AppLogger.warning('Failed to load subscribed list $listId: $e');
+      AppLogger.warning('Recommend source failed: $e');
       return const {'movies': []};
     }
   }
