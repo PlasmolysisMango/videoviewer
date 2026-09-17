@@ -48,6 +48,7 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
   String? _error;
   int _netRetries = 0; // hls.js 网络类致命错误的自动重试次数
   bool _isFullscreen = false;
+  bool _controlsVisible = true; // 单击视频区切换顶部/底部控制 UI
   final String _viewType =
       'hls-player-${DateTime.now().microsecondsSinceEpoch}';
 
@@ -205,6 +206,8 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
     v.paused ? v.play() : v.pause();
   }
 
+  void _toggleControls() => setState(() => _controlsVisible = !_controlsVisible);
+
   void _seekRelative(double seconds) {
     final v = _video;
     if (v == null) return;
@@ -227,7 +230,11 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
   }
 
   void _toggleFullscreen() {
-    setState(() => _isFullscreen = !_isFullscreen);
+    setState(() {
+      _isFullscreen = !_isFullscreen;
+      // 切换全屏时确保控制 UI 可见，方便用户退出全屏
+      _controlsVisible = true;
+    });
     if (_isFullscreen) {
       html.document.documentElement?.requestFullscreen();
     } else {
@@ -239,10 +246,15 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: Text(widget.title, style: const TextStyle(fontSize: 16)),
-        backgroundColor: Colors.black,
-      ),
+      // 黑色背景必须显式白色前景，否则默认 onSurface 深色图标/标题看不清；
+      // 单击视频区可隐藏/恢复控制 UI。
+      appBar: _controlsVisible
+          ? AppBar(
+              title: Text(widget.title, style: const TextStyle(fontSize: 16)),
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+            )
+          : null,
       body: Column(
         children: [
           Expanded(
@@ -293,10 +305,13 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
                     ),
                   ),
                 // 手势层：PointerInterceptor 让 platform view 之上的
-                // Flutter 手势能收到指针事件
+                // Flutter 手势能收到指针事件（单击切 UI、双击播放/暂停）
                 Positioned.fill(
                   child: PointerInterceptor(
                     child: PlayerGestureOverlay(
+                      playing: _playing,
+                      onSingleTap: _toggleControls,
+                      onDoubleTap: _togglePlay,
                       volume: _volume,
                       brightness: _brightness,
                       onVolumeChanged: _setVolume,
@@ -310,20 +325,21 @@ class _HlsPlayerScreenState extends State<HlsPlayerScreen> {
               ],
             ),
           ),
-          PlayerControlBar(
-            playing: _playing,
-            onPlayPause: _togglePlay,
-            position: _position,
-            duration: _duration,
-            onSeekTo: _seekTo,
-            qualityLabels: _streams.map((s) => s.label).toList(),
-            currentQuality: _current,
-            onQualityChanged: _switchQuality,
-            rate: _rate,
-            onRateChanged: _setRate,
-            isFullscreen: _isFullscreen,
-            onToggleFullscreen: _toggleFullscreen,
-          ),
+          if (_controlsVisible)
+            PlayerControlBar(
+              playing: _playing,
+              onPlayPause: _togglePlay,
+              position: _position,
+              duration: _duration,
+              onSeekTo: _seekTo,
+              qualityLabels: _streams.map((s) => s.label).toList(),
+              currentQuality: _current,
+              onQualityChanged: _switchQuality,
+              rate: _rate,
+              onRateChanged: _setRate,
+              isFullscreen: _isFullscreen,
+              onToggleFullscreen: _toggleFullscreen,
+            ),
         ],
       ),
     );

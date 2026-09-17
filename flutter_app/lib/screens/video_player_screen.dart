@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/models.dart';
+import '../services/history.dart';
 import '../services/logger.dart';
 import '../services/player_engine.dart';
 import '../widgets/player_control_bar.dart';
@@ -13,10 +14,18 @@ class VideoPlayerScreen extends StatefulWidget {
   final List<VideoStream> streams;
   final String title;
 
+  /// 影片元信息：用于观影历史进度记录（空则不记录）。
+  final String movieId;
+  final String movieNumber;
+  final String cover;
+
   const VideoPlayerScreen({
     super.key,
     required this.streams,
     required this.title,
+    this.movieId = '',
+    this.movieNumber = '',
+    this.cover = '',
   });
 
   @override
@@ -38,6 +47,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   bool _loading = true;
   String? _error;
   bool _isFullscreen = false;
+  bool _controlsVisible = true; // 单击视频区切换控制 UI（AppBar/控制栏）
 
   @override
   void initState() {
@@ -104,6 +114,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   void dispose() {
+    // 观影历史：记录本次播放进度（秒），超过阈值标记为"看过"。
+    if (widget.movieId.isNotEmpty) {
+      HistoryService.recordProgress(
+        id: widget.movieId,
+        number: widget.movieNumber,
+        title: widget.title,
+        cover: widget.cover,
+        seconds: _controller?.position.inSeconds ?? 0,
+      );
+    }
     // 退出时恢复竖屏允许 + 显示状态栏
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -131,6 +151,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     c.isPlaying ? c.pause() : c.play();
   }
 
+  void _toggleControls() => setState(() => _controlsVisible = !_controlsVisible);
+
   void _seekRelative(double seconds) {
     final c = _controller;
     if (c == null) return;
@@ -156,7 +178,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   /// 切换全屏：横屏全屏 + 隐藏状态栏
   void _toggleFullscreen() {
-    setState(() => _isFullscreen = !_isFullscreen);
+    setState(() {
+      _isFullscreen = !_isFullscreen;
+      // 切换全屏时确保控制 UI 可见，方便用户退出全屏
+      _controlsVisible = true;
+    });
     if (_isFullscreen) {
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
@@ -199,6 +225,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             // 手势层
             Positioned.fill(
               child: PlayerGestureOverlay(
+                playing: _playing,
+                onSingleTap: _toggleControls,
+                onDoubleTap: _togglePlay,
                 volume: _volume,
                 brightness: _brightness,
                 onVolumeChanged: _setVolume,
@@ -208,25 +237,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               ),
             ),
             // 底部控制栏（浮层）
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: PlayerControlBar(
-                playing: _playing,
-                onPlayPause: _togglePlay,
-                position: _position,
-                duration: _duration,
-                onSeekTo: _seekTo,
-                qualityLabels: _streams.map((s) => s.label).toList(),
-                currentQuality: _current,
-                onQualityChanged: _switchQuality,
-                rate: _rate,
-                onRateChanged: _setRate,
-                isFullscreen: _isFullscreen,
-                onToggleFullscreen: _toggleFullscreen,
+            if (_controlsVisible)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: PlayerControlBar(
+                  playing: _playing,
+                  onPlayPause: _togglePlay,
+                  position: _position,
+                  duration: _duration,
+                  onSeekTo: _seekTo,
+                  qualityLabels: _streams.map((s) => s.label).toList(),
+                  currentQuality: _current,
+                  onQualityChanged: _switchQuality,
+                  rate: _rate,
+                  onRateChanged: _setRate,
+                  isFullscreen: _isFullscreen,
+                  onToggleFullscreen: _toggleFullscreen,
+                ),
               ),
-            ),
           ],
         ),
       );
@@ -235,10 +265,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     // 普通模式：AppBar + 视频 + 底部控制栏
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: Text(widget.title, style: const TextStyle(fontSize: 16)),
-        backgroundColor: Colors.black,
-      ),
+      // 黑色背景必须显式白色前景，否则默认 onSurface 深色图标/标题看不清
+      appBar: _controlsVisible
+          ? AppBar(
+              title: Text(widget.title, style: const TextStyle(fontSize: 16)),
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+            )
+          : null,
       body: Column(
         children: [
           Expanded(
@@ -262,6 +296,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 // 手势层
                 Positioned.fill(
                   child: PlayerGestureOverlay(
+                    playing: _playing,
+                    onSingleTap: _toggleControls,
+                    onDoubleTap: _togglePlay,
                     volume: _volume,
                     brightness: _brightness,
                     onVolumeChanged: _setVolume,
@@ -273,20 +310,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               ],
             ),
           ),
-          PlayerControlBar(
-            playing: _playing,
-            onPlayPause: _togglePlay,
-            position: _position,
-            duration: _duration,
-            onSeekTo: _seekTo,
-            qualityLabels: _streams.map((s) => s.label).toList(),
-            currentQuality: _current,
-            onQualityChanged: _switchQuality,
-            rate: _rate,
-            onRateChanged: _setRate,
-            isFullscreen: _isFullscreen,
-            onToggleFullscreen: _toggleFullscreen,
-          ),
+          if (_controlsVisible)
+            PlayerControlBar(
+              playing: _playing,
+              onPlayPause: _togglePlay,
+              position: _position,
+              duration: _duration,
+              onSeekTo: _seekTo,
+              qualityLabels: _streams.map((s) => s.label).toList(),
+              currentQuality: _current,
+              onQualityChanged: _switchQuality,
+              rate: _rate,
+              onRateChanged: _setRate,
+              isFullscreen: _isFullscreen,
+              onToggleFullscreen: _toggleFullscreen,
+            ),
         ],
       ),
     );

@@ -8,6 +8,9 @@ const kSubCollection = 'collection';
 const kSubGenre = 'genre';
 const kSubActor = 'actor';
 
+/// 影片收藏：复用订阅存储（kind=movie），在收藏夹页展示而非主页分栏。
+const kSubMovie = 'movie';
+
 /// 订阅状态：合集/题材/演员的订阅与取消会立即通知监听者（首页各分栏），
 /// 避免依赖页面返回时机手动刷新。记录为后端原样的 map：
 /// 合集 {id,name,movies_count}、题材 {id,name,group}、演员 {id,name,avatar}。
@@ -64,6 +67,13 @@ class SubscriptionProvider extends ChangeNotifier {
     await _client.subscribe(kSubActor, id, name, avatar: avatar);
     await load();
     AppLogger.info('Subscribed actor $id');
+  }
+
+  /// 收藏影片（封面存 avatar 字段），收藏夹页展示。
+  Future<void> favoriteMovie(String id, String name, {String? cover}) async {
+    await _client.subscribe(kSubMovie, id, name, avatar: cover);
+    await load();
+    AppLogger.info('Favorited movie $id');
   }
 
   Future<void> unsubscribe(String kind, String id) async {

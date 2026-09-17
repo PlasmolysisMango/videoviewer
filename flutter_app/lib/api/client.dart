@@ -269,7 +269,8 @@ class JavDBClient {
   }
 
   /// 题材（tag）影片浏览：/api/genre?group={web_group_id}&tag={tag_id}。
-  /// 该能力走 JavDB 网页版 /tags 页面，需要已导入网页版 Cookie。
+  /// 走 JavDB app 端 /v1/movies/tags（仅需 app 登录，无需网页版 Cookie），
+  /// group 仅作兼容参数，app 端 tag id 全局唯一。
   Future<Map<String, dynamic>> getGenreMovies(String group, String tag,
       {int page = 1, int limit = 20, String? sort}) async {
     final params = <String, String>{

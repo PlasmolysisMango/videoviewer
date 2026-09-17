@@ -12,8 +12,10 @@ import '../services/logger.dart';
 import '../widgets/common_ui.dart';
 import 'actor_catalog_screen.dart';
 import 'collection_screen.dart';
+import 'favorites_screen.dart';
 import 'genre_catalog_screen.dart';
 import 'genre_screen.dart';
+import 'history_screen.dart';
 import 'list_detail_screen.dart';
 import 'log_screen.dart';
 import 'movie_detail_screen.dart';
@@ -127,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
             () => _client.actorMovies((s['id'] as String?) ?? '', limit: 20)),
     ];
     try {
-      final results = await Future.wait(requests);
+      final results = await _runBatched(requests);
       final pool = <String, Movie>{};
       for (final r in results) {
         final ms = (r['movies'] as List?)
@@ -138,18 +140,55 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
       if (pool.isEmpty) {
-        throw Exception('empty recommend pool');
+        // 冷缓存下全部切面同时请求可能被上游限流而全空；
+        // 先试一次总榜单（单请求不易触发限流），仍失败才降级热播榜。
+        AppLogger.warning('Random pool empty, retry top250 total list');
+        final r = await _safeMovies(
+            () => _client.getRanking('top250', limit: 40));
+        final ms = (r['movies'] as List?)
+                ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
+                .toList() ??
+            const <Movie>[];
+        if (ms.isEmpty) {
+          throw Exception('empty recommend pool');
+        }
+        return [...ms]..shuffle();
       }
       return pool.values.toList()..shuffle();
     } catch (e) {
       AppLogger.warning(
           'Random pool recommendation failed, fallback to playback: $e');
-      final r = await _client.getRanking('playback');
-      return (r['movies'] as List?)
-              ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
-              .toList() ??
-          const <Movie>[];
+      try {
+        final r = await _client.getRanking('playback');
+        final ms = (r['movies'] as List?)
+                ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
+                .toList() ??
+            const <Movie>[];
+        return [...ms]..shuffle();
+      } catch (e2) {
+        AppLogger.error('Playback fallback failed', e2);
+        rethrow;
+      }
     }
+  }
+
+  /// 分批并发执行推荐源请求：冷缓存下十几路同时打向上游会触发
+  /// 限流（表现为切面全空、推荐池被迫降级到热播榜），这里限制
+  /// 并发度并在批间稍作间隔；缓存变热后各请求毫秒级返回，总体无感。
+  Future<List<Map<String, dynamic>>> _runBatched(
+    List<Future<Map<String, dynamic>>> jobs, {
+    int size = 3,
+    int gapMs = 300,
+  }) async {
+    final out = <Map<String, dynamic>>[];
+    for (var i = 0; i < jobs.length; i += size) {
+      final end = (i + size).clamp(0, jobs.length);
+      out.addAll(await Future.wait(jobs.sublist(i, end)));
+      if (end < jobs.length) {
+        await Future<void>.delayed(Duration(milliseconds: gapMs));
+      }
+    }
+    return out;
   }
 
   /// 单个推荐源的容错包装：失败返回空结构，只缩池不影响其余来源。
@@ -225,6 +264,16 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.favorite_border),
+            tooltip: '收藏夹',
+            onPressed: () => _push(context, const FavoritesScreen()),
+          ),
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: '历史记录',
+            onPressed: () => _push(context, const HistoryScreen()),
+          ),
           _buildThemeMenu(context),
           IconButton(
             icon: const Icon(Icons.bug_report),

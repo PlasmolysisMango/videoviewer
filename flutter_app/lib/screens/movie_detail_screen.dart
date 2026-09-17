@@ -1,9 +1,12 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../api/models.dart';
+import '../providers/subscription_provider.dart';
 import '../services/backend_launcher.dart';
+import '../services/history.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
@@ -37,7 +40,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   String _reviewSort = 'hotly';
   bool _reviewsLoading = false;
   Map<String, dynamic>? _avData;
-  // 默认变体列表（惰性加载：不探测直接展示，点击播放才解析）
+  // 变体探测失败时的占位列表；正常以 avProbe（MissAV 搜索接口）结果为准。
   static const _defaultVariants = ['uncensored', 'cnsub', 'normal'];
 
   Map<String, List<VideoStream>> _streamsByVariant = {};
@@ -47,6 +50,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   List<String> _availableSources = [];
   String _selectedSource = '';
   String? _streamError; // 片源解析错误信息
+  bool _resolving = false; // 点击播放后按需解析中的加载态（按钮图标）
   bool _isLoading = true;
   String? _error;
   int _galleryPage = 0;
@@ -60,6 +64,13 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     _loadReviews();
     _loadAvData();
     _loadSources();
+    // 进入详情即计入观影历史（浏览过）；播放页再更新观看进度。
+    HistoryService.recordView(
+      id: widget.movieId,
+      number: widget.movieNumber,
+      title: '',
+      cover: '',
+    );
   }
 
   /// 从后端拉取已注册的 AV 数据源列表（missav/jable/hohoj）。
@@ -108,6 +119,16 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         _magnets = magnetsList;
         _isLoading = false;
       });
+      // 元信息就绪，补全历史条目（番号/标题/封面，进度合并）。
+      final m = _movieData;
+      if (m != null) {
+        HistoryService.recordView(
+          id: widget.movieId,
+          number: (m['number'] as String?) ?? '',
+          title: (m['title'] as String?) ?? '',
+          cover: (m['cover_url'] as String?) ?? '',
+        );
+      }
       AppLogger.info(
           'Movie loaded: ${_movieData?['number']}, magnets: ${_magnets.length}');
     } catch (e) {
@@ -142,13 +163,53 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       final result = await _client.avDetail(widget.movieNumber, source: source);
       setState(() {
         _avData = result['video'] as Map<String, dynamic>?;
-        // 直接展示默认变体占位符，不发起探测请求
+        // 先展示占位变体，随后用搜索接口探测真实变体并刷新按钮
         _availableVariants = _defaultVariants;
         _streamError = null;
       });
       AppLogger.info('AV data loaded, m3u8: ${_avData?['m3u8']}');
+      // 提前探测变体：不阻塞详情页，结果回来即更新
+      _probeVariants();
     } catch (e) {
       AppLogger.error('AV data not available', e);
+    }
+  }
+
+  /// 进入详情页即探测可用变体：一次搜索请求拿到该番号的全部变体页面，
+  /// 没有「无码」就不展示无码按钮，按 无码 → 中字 → 原片 排序。
+  /// 探测失败静默保留占位符，不影响播放（点击播放仍按需解析）。
+  Future<void> _probeVariants() async {
+    final number = widget.movieNumber;
+    if (number.isEmpty) return;
+    final srcAtStart = _selectedSource;
+    try {
+      final source = srcAtStart.isNotEmpty ? srcAtStart : null;
+      final result = await _client.avProbe(number, source: source);
+      // 探测期间用户切换了片源：结果属于旧源，丢弃（切源会重新探测）
+      if (_selectedSource != srcAtStart || !mounted) return;
+      const order = ['uncensored', 'cnsub', 'normal'];
+      final kinds = <String>[];
+      for (final v in (result['variants'] as List? ?? const [])) {
+        final m = v as Map<String, dynamic>;
+        final kind = (m['kind'] as String?) ?? '';
+        final available = (m['available'] as bool?) ?? true;
+        if (!available || !order.contains(kind) || kinds.contains(kind)) {
+          continue;
+        }
+        kinds.add(kind);
+      }
+      kinds.sort((a, b) => order.indexOf(a).compareTo(order.indexOf(b)));
+      if (kinds.isEmpty) return;
+      setState(() {
+        _availableVariants = kinds;
+        // 占位选中的变体不存在时，改选探测到的第一个
+        if (!kinds.contains(_selectedVariant)) {
+          _selectedVariant = kinds.first;
+        }
+      });
+      AppLogger.info('Probed variants for $number: $kinds');
+    } catch (e) {
+      AppLogger.info('Probe variants failed, keep placeholders: $e');
     }
   }
 
@@ -198,7 +259,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     if (source == _selectedSource) return;
     setState(() {
       _selectedSource = source;
-      // 清空旧的流，恢复默认变体占位符
+      // 清空旧的流与变体，恢复占位符；_loadAvData 会重新探测真实变体
       _streamsByVariant = {};
       _availableVariants = _defaultVariants;
       _selectedVariant = 'uncensored';
@@ -250,9 +311,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
-  /// 播放按钮旁的变体下拉：始终展示三个变体供选择。
+  /// 播放按钮旁的变体下拉：单变体也展示（下拉里只有一项，如「原片」），
+  /// 让用户明确该片源的可用变体，而不是下拉消失让人误以为探测失效。
   Widget _buildVariantSelector() {
-    if (_availableVariants.length < 2) return const SizedBox.shrink();
     return PopupMenuButton<String>(
       tooltip: '选择变体',
       onSelected: (v) => setState(() => _selectedVariant = v),
@@ -297,33 +358,34 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   }
 
   Future<void> _playVideo() async {
-    // 惰性加载：如果该变体的流尚未解析，先按需拉取
+    // 惰性加载：如果该变体的流尚未解析，先按需拉取。
+    // 解析中不弹任何提示（避免遮挡画面），仅在播放按钮上显示加载图标；
+    // 失败时才用 SnackBar 提示。
     var streams = List<VideoStream>.from(
         _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
     if (streams.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('正在解析视频源...')),
-        );
-      }
-      await _resolveVariant(_selectedVariant);
-      streams = List<VideoStream>.from(
-          _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
-      if (streams.isEmpty) {
-        final m3u8Url = _avData?['m3u8'] as String?;
-        if (m3u8Url == null || m3u8Url.isEmpty) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(
-                _streamError != null
-                    ? '视频源不可用: $_streamError'
-                    : '视频源不可用',
-              )),
-            );
+      setState(() => _resolving = true);
+      try {
+        await _resolveVariant(_selectedVariant);
+        streams = List<VideoStream>.from(
+            _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
+        if (streams.isEmpty) {
+          final m3u8Url = _avData?['m3u8'] as String?;
+          if (m3u8Url == null || m3u8Url.isEmpty) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                    content: Text(_streamError != null
+                        ? '视频源不可用: $_streamError'
+                        : '视频源不可用')),
+              );
+            }
+            return;
           }
-          return;
+          streams.add(VideoStream(url: m3u8Url));
         }
-        streams.add(VideoStream(url: m3u8Url));
+      } finally {
+        if (mounted) setState(() => _resolving = false);
       }
     }
 
@@ -334,7 +396,13 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       screen = HlsPlayerScreen(streams: streams, title: title);
     } else {
       // 原生播放器（ExoPlayer）原生支持 HLS，可带 Referer 头直连
-      screen = VideoPlayerScreen(streams: streams, title: title);
+      screen = VideoPlayerScreen(
+        streams: streams,
+        title: title,
+        movieId: widget.movieId,
+        movieNumber: _movieData?['number'] as String? ?? '',
+        cover: _movieData?['cover_url'] as String? ?? '',
+      );
     }
 
     AppLogger.info(
@@ -462,11 +530,52 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
+  /// 收藏按钮：加入收藏夹（复用订阅存储 kind=movie，与订阅相互独立）。
+  Widget _buildFavButton(BuildContext context) {
+    final provider = context.watch<SubscriptionProvider>();
+    final number =
+        _movieData?['number'] as String? ?? widget.movieNumber;
+    final cover = _movieData?['cover_url'] as String?;
+    final fav = provider.isSubscribed(kSubMovie, widget.movieId);
+    return IconButton(
+      icon: Icon(
+        fav ? Icons.favorite : Icons.favorite_border,
+        color: fav ? Colors.redAccent : null,
+      ),
+      tooltip: fav ? '取消收藏' : '收藏',
+      onPressed: () async {
+        try {
+          if (fav) {
+            await provider.unsubscribe(kSubMovie, widget.movieId);
+          } else {
+            await provider.favoriteMovie(widget.movieId, number, cover: cover);
+          }
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(fav ? '已取消收藏' : '已加入收藏'),
+              duration: const Duration(seconds: 1),
+            ));
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('操作失败: $e'),
+              backgroundColor: Colors.red,
+            ));
+          }
+        }
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(_movieData?['number'] as String? ?? '电影详情'),
+        actions: [
+          if (_movieData != null) _buildFavButton(context),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -478,7 +587,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
-  /// 画廊：封面在前，JavDB 详情页预览大图随后，左右滑动切换。
+  /// 画廊：封面在前，预览大图随后，左右滑动切换；点按进入全屏查看器。
   Widget _buildGallery(Map<String, dynamic> movie) {
     final urls = <String>[];
     final cover = movie['cover_url'] as String?;
@@ -489,7 +598,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     urls.addAll(previews.where((u) => u.isNotEmpty));
     if (urls.isEmpty) return const SizedBox.shrink();
 
-    return Column(
+    return Stack(
       children: [
         SizedBox(
           height: 300,
@@ -497,35 +606,48 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             itemCount: urls.length,
             onPageChanged: (i) => setState(() => _galleryPage = i),
             itemBuilder: (context, i) {
-              return Center(
-                child: Image.network(
-                  resolveImageUrl(urls[i]),
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) =>
-                      const Icon(Icons.movie, size: 100),
+              return GestureDetector(
+                onTap: () => _openImageViewer(urls, i),
+                child: Center(
+                  child: Image.network(
+                    resolveImageUrl(urls[i]),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) =>
+                        const Icon(Icons.movie, size: 100),
+                  ),
                 ),
               );
             },
           ),
         ),
+        // 页码指示器：固定右上角，不随图片数量变长。
         if (urls.length > 1)
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(urls.length, (i) {
-              return Container(
-                width: 8,
-                height: 8,
-                margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 8),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: i == _galleryPage
-                      ? Theme.of(context).colorScheme.primary
-                      : Theme.of(context).hintColor.withOpacity(0.3),
-                ),
-              );
-            }),
+          Positioned(
+            right: 12,
+            bottom: 12,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black45,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${_galleryPage + 1} / ${urls.length}',
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+              ),
+            ),
           ),
       ],
+    );
+  }
+
+  void _openImageViewer(List<String> urls, int initial) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ImageViewerScreen(urls: urls, initial: initial),
+      ),
     );
   }
 
@@ -543,7 +665,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           Row(
             children: [
               Expanded(
-                child: Text(
+                child: SelectableText(
                   movie['number'] as String? ?? '',
                   style: const TextStyle(
                       fontSize: 24, fontWeight: FontWeight.bold),
@@ -568,7 +690,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          Text(
+          SelectableText(
             movie['title'] as String? ?? '',
             style: TextStyle(
                 fontSize: 15, color: Theme.of(context).hintColor, height: 1.4),
@@ -615,8 +737,14 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: _playVideo,
-                  icon: const Icon(Icons.play_arrow),
+                  onPressed: _resolving ? null : _playVideo,
+                  icon: _resolving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow),
                   label: const Text('播放'),
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
@@ -905,7 +1033,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           ),
           if (content.isNotEmpty) ...[
             const SizedBox(height: 8),
-            Text(content,
+            SelectableText(content,
                 style: const TextStyle(fontSize: 13, height: 1.5)),
           ],
           if (date.isNotEmpty || likes > 0)
@@ -955,9 +1083,54 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ),
           ),
           Expanded(
-              child: Text(value,
+              child: SelectableText(value,
                   style: const TextStyle(fontWeight: FontWeight.w500))),
         ],
+      ),
+    );
+  }
+}
+
+/// 全屏图片查看器：黑底 PageView 翻页，双指缩放拖动查看细节。
+class _ImageViewerScreen extends StatefulWidget {
+  final List<String> urls;
+  final int initial;
+
+  const _ImageViewerScreen({required this.urls, required this.initial});
+
+  @override
+  State<_ImageViewerScreen> createState() => _ImageViewerScreenState();
+}
+
+class _ImageViewerScreenState extends State<_ImageViewerScreen> {
+  late int _page = widget.initial;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text('${_page + 1} / ${widget.urls.length}'),
+      ),
+      body: PageView.builder(
+        itemCount: widget.urls.length,
+        controller: PageController(initialPage: widget.initial),
+        onPageChanged: (i) => setState(() => _page = i),
+        itemBuilder: (context, i) {
+          return InteractiveViewer(
+            maxScale: 5,
+            child: Center(
+              child: Image.network(
+                resolveImageUrl(widget.urls[i]),
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(Icons.broken_image,
+                    size: 80, color: Colors.white38),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

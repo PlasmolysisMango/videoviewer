@@ -166,17 +166,41 @@ class _GenreScreenState extends State<GenreScreen> {
   /// 加载失败视图：登录墙错误（未导入网页版 Cookie）在下方面给"登录"入口，
   /// 从登录页导入 Cookie 返回后自动重试。
   Widget _buildError(BuildContext context) {
+    final err = _error ?? '';
+    // 题材数据走网页版端点：登录墙 / 年龄门都意味着网页版会话缺失或过期。
+    // 这与 App 登录（账号密码换取的 app token）是两套独立登录态。
+    final isAuthError =
+        err.contains('login required') || err.contains('登入') || err.contains('18');
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Text('加载失败: $_error',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: Theme.of(context).colorScheme.error, fontSize: 12)),
-          ),
+          if (isAuthError) ...[
+            const Icon(Icons.lock_outline, size: 40),
+            const SizedBox(height: 12),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 32),
+              child: Text('题材浏览需要网页版登录态\n（与 App 登录相互独立）',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14)),
+            ),
+            const SizedBox(height: 8),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                  '请在登录页导入最新的网页版 Cookie；\n若已导入过，说明 Cookie 已过期，重新导入即可。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ),
+          ] else
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text('加载失败: $err',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12)),
+            ),
           const SizedBox(height: 16),
           Row(mainAxisSize: MainAxisSize.min, children: [
             OutlinedButton(
@@ -190,7 +214,7 @@ class _GenreScreenState extends State<GenreScreen> {
                 MaterialPageRoute(builder: (_) => const LoginScreen()),
               ).then((_) => _loadMovies(page: _page)),
               icon: const Icon(Icons.login, size: 18),
-              label: const Text('登录'),
+              label: const Text('导入网页版 Cookie'),
             ),
           ]),
         ],
