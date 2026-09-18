@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -7,6 +9,7 @@ import '../providers/auth_provider.dart';
 import '../providers/subscription_provider.dart';
 import '../providers/theme_provider.dart';
 import '../services/backend_launcher.dart';
+import '../services/data_cache.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
@@ -57,12 +60,24 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _error;
   int _bannerPage = 0;
 
+  /// TOP250 切面失败冷却：失败后 10 分钟内不再重试。未登录/app_token
+  /// 过期时这些切面双端都注定失败，避免每次进首页都白等全部切面。
+  static final Map<String, DateTime> _facetCooldown = {};
+  static const _facetCooldownFor = Duration(minutes: 10);
+
+  /// 推荐池持久缓存 key：重进首页/冷启动先展示上次结果再后台刷新。
+  static const _poolCacheKey = 'home.pool.v1';
+
   @override
   void initState() {
     super.initState();
     _client = JavDBClient(BackendLauncher.baseUrl);
     _bannerController = PageController(viewportFraction: 0.88);
-    _loadHome();
+    _restoreCachedPool().then((hasCache) {
+      // 有缓存：立即展示旧数据，后台静默刷新（stale-while-revalidate）；
+      // 无缓存：走正常加载（全屏 loading）。
+      _loadHome(silent: hasCache);
+    });
   }
 
   @override
@@ -79,11 +94,35 @@ class _HomeScreenState extends State<HomeScreen> {
         : const Color(0xFFF2F4F8);
   }
 
-  Future<void> _loadHome() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  /// 恢复上次成功的推荐池缓存；返回是否命中。
+  Future<bool> _restoreCachedPool() async {
+    try {
+      final data = await DataCache.instance
+          .read(_poolCacheKey, maxAge: const Duration(days: 7));
+      final list = (data as List?)
+              ?.map((e) => Movie.fromJson((e as Map).cast<String, dynamic>()))
+              .toList() ??
+          const <Movie>[];
+      if (list.isNotEmpty && mounted) {
+        setState(() {
+          _recMovies = list;
+          _loading = false;
+        });
+        return true;
+      }
+    } catch (e) {
+      AppLogger.warning('Restore home pool cache failed: $e');
+    }
+    return false;
+  }
+
+  Future<void> _loadHome({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final recMovies = await _recommendFromPool();
       if (!mounted) return;
@@ -91,11 +130,16 @@ class _HomeScreenState extends State<HomeScreen> {
         _recMovies = recMovies;
         _loading = false;
       });
+      unawaited(DataCache.instance
+          .write(_poolCacheKey, recMovies.map((m) => m.toJson()).toList()));
       AppLogger.info('Home loaded: ${recMovies.length} recommended');
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        // 静默刷新失败且已有缓存内容时不打扰用户
+        if (!silent || _recMovies.isEmpty) {
+          _error = e.toString();
+        }
         _loading = false;
       });
       AppLogger.error('Failed to load home data', e);
@@ -110,10 +154,14 @@ class _HomeScreenState extends State<HomeScreen> {
     final provider = context.read<SubscriptionProvider>();
     await provider.ensureLoaded();
     final requests = <Future<Map<String, dynamic>>>[
-      // 底池：TOP250 所有榜单切面
+      // 底池：TOP250 所有榜单切面（失败冷却中的切面本轮跳过）
       for (final (year, vtype) in _top250Facets)
-        _safeMovies(() => _client.getRanking('top250',
-            year: year, vtype: vtype, limit: 20)),
+        if (!_facetOnCooldown(year, vtype))
+          _safeMovies(
+            () => _client.getRanking('top250',
+                year: year, vtype: vtype, limit: 20),
+            cooldownKey: 'top250:$year:$vtype',
+          ),
       // 订阅合集
       for (final s in provider.byKind(kSubCollection))
         _safeMovies(() =>
@@ -192,14 +240,28 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 单个推荐源的容错包装：失败返回空结构，只缩池不影响其余来源。
+  /// cooldownKey 非空时记录失败时间（冷却期内调用方跳过该源）。
   Future<Map<String, dynamic>> _safeMovies(
-      Future<Map<String, dynamic>> Function() fetch) async {
+      Future<Map<String, dynamic>> Function() fetch,
+      {String? cooldownKey}) async {
     try {
-      return await fetch();
+      final r = await fetch();
+      if (cooldownKey != null) _facetCooldown.remove(cooldownKey);
+      return r;
     } catch (e) {
       AppLogger.warning('Recommend source failed: $e');
+      if (cooldownKey != null) {
+        _facetCooldown[cooldownKey] = DateTime.now();
+      }
       return const {'movies': []};
     }
+  }
+
+  /// 该 TOP250 切面是否处于失败冷却期。
+  bool _facetOnCooldown(String? year, String? vtype) {
+    final failedAt = _facetCooldown['top250:$year:$vtype'];
+    return failedAt != null &&
+        DateTime.now().difference(failedAt) < _facetCooldownFor;
   }
 
   void _push(BuildContext context, Widget screen) {

@@ -201,36 +201,61 @@ type VariantResolver interface {
 }
 
 // Probe 轻量探测番号的可用变体（仅抓取 HTML，不拉取播放列表）。
-// 用于前端在详情页快速展示变体按钮，用户点击后才按需调用 ResolveVariant。
+// source 为空时按优先级逐源尝试：某源无此片/探测失败则换下一源；
+// 指定 source 时只探测该源。
 func (c *Client) Probe(ctx context.Context, code string, source string) (*ProbeResult, error) {
+	var lastErr error
 	for _, s := range c.ordered(source) {
-		if p, ok := s.(Prober); ok {
-			result, err := p.Probe(ctx, code)
-			if err != nil {
-				log.Printf("[av] source=%s probe %s: %v", s.Name(), code, err)
-				return nil, err
-			}
-			return result, nil
+		p, ok := s.(Prober)
+		if !ok {
+			continue
 		}
+		result, err := p.Probe(ctx, code)
+		if err != nil {
+			log.Printf("[av] source=%s probe %s: %v", s.Name(), code, err)
+			lastErr = err
+			continue
+		}
+		return result, nil
 	}
-	return nil, fmt.Errorf("%w: no source supports probe", ErrNotImplemented)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("%w: no source supports probe", ErrNotImplemented)
+	}
+	return nil, lastErr
 }
 
 // ResolveVariant 按番号+变体解析播放流（按需加载）。
 // variant 为 "uncensored" / "cnsub" / "normal" 之一；空字符串表示默认变体。
+// source 为空时逐源级联：失败或无流则换下一源；指定 source 时只试该源。
 func (c *Client) ResolveVariant(ctx context.Context, code, variant, source string) ([]Stream, error) {
+	var lastErr error
+	tried := false
 	for _, s := range c.ordered(source) {
-		if vr, ok := s.(VariantResolver); ok {
-			streams, err := vr.ResolveVariant(ctx, code, variant)
-			if err != nil {
-				log.Printf("[av] source=%s resolve variant=%s %s: %v", s.Name(), variant, code, err)
-				return nil, err
-			}
-			return streams, nil
+		vr, ok := s.(VariantResolver)
+		if !ok {
+			continue
 		}
+		tried = true
+		streams, err := vr.ResolveVariant(ctx, code, variant)
+		if err != nil {
+			log.Printf("[av] source=%s resolve variant=%s %s: %v", s.Name(), variant, code, err)
+			lastErr = err
+			continue
+		}
+		if len(streams) == 0 {
+			lastErr = ErrNoStream
+			continue
+		}
+		return streams, nil
 	}
-	// 回退到全量解析
-	return c.Resolve(ctx, code, source)
+	if !tried {
+		// 无任何源支持按变体解析：回退全量解析（其本身已级联）
+		return c.Resolve(ctx, code, source)
+	}
+	if lastErr == nil {
+		lastErr = ErrNoStream
+	}
+	return nil, lastErr
 }
 
 // Play 解析并返回最适合播放的一路流（默认最高清晰度）。

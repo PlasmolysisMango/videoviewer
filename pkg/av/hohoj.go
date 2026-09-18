@@ -9,7 +9,9 @@ import (
 
 var (
 	hohojVideoSrcRe = regexp.MustCompile(`var\s+videoSrc\s*=\s*"([^"]+)"`)
-	hohojIDRe       = regexp.MustCompile(`[?&]id=(\d+)`)
+	// 搜索结果卡片：/video?id=N 与紧随其后的 img alt（含番号标题），
+	// 限窗避免跨越相邻卡片。
+	hohojCardRe = regexp.MustCompile(`(?s)href="/video\?id=(\d+)".{0,400}?alt="([^"]*)"`)
 )
 
 // HohoJSource 是 HohoJ 数据源实现。
@@ -42,18 +44,34 @@ func (s *HohoJSource) Latest(context.Context, Query) ([]Video, error) {
 	return nil, fmt.Errorf("%w: hohoj latest", ErrNotImplemented)
 }
 
-// findID 搜索番号并返回首个视频 id。
+// findID 搜索番号并返回精确匹配卡片的视频 id。
+// hohoj 搜索索引是未补零形式（实测搜 ssis-041 返回空页，搜 ssis-41
+// 命中 SSIS-411~419 等同前缀系列），因此先搜未补零小写番号，
+// 无精确命中再试补零形式；搜索是模糊匹配（混入同前缀其它番号），
+// 必须解析卡片 alt 中的番号精确比对（sameCode 忽略尾部前导零），
+// 否则会解析到别的影片（实测 SSIS-41 曾命中首条 SSIS-414）。
 func (s *HohoJSource) findID(ctx context.Context, code string) (string, error) {
-	searchURL := fmt.Sprintf("%s/search?text=%s", s.base(), strings.ToLower(code))
-	body, err := s.http.GetWithRetry(ctx, searchURL, s.base()+"/", 2)
-	if err != nil {
-		return "", err
+	code = normalizeCode(code)
+	padded := strings.ToLower(padCodeDigits(code))
+	queries := []string{strings.ToLower(code)}
+	if padded != queries[0] {
+		queries = append(queries, padded)
 	}
-	m := hohojIDRe.FindStringSubmatch(string(body))
-	if m == nil {
-		return "", fmt.Errorf("%w: hohoj id for %s", ErrNotFound, code)
+	var lastErr error
+	for _, q := range queries {
+		searchURL := fmt.Sprintf("%s/search?text=%s", s.base(), q)
+		body, err := s.http.GetWithRetry(ctx, searchURL, s.base()+"/", 2)
+		if err != nil {
+			return "", err
+		}
+		for _, m := range hohojCardRe.FindAllStringSubmatch(string(body), -1) {
+			if c := ExtractCode(m[2]); c != "" && sameCode(c, code) {
+				return m[1], nil
+			}
+		}
+		lastErr = fmt.Errorf("%w: hohoj id for %s", ErrNotFound, code)
 	}
-	return m[1], nil
+	return "", lastErr
 }
 
 // Detail 返回基于番号的基础元数据（该站点列表页信息有限）。
@@ -97,4 +115,26 @@ func (s *HohoJSource) Resolve(ctx context.Context, code string) ([]Stream, error
 	return streams, nil
 }
 
+// Probe 实现 Prober：搜索命中精确番号即视为有“原片”（该站单版本）。
+func (s *HohoJSource) Probe(ctx context.Context, code string) (*ProbeResult, error) {
+	code = normalizeCode(code)
+	if _, err := s.findID(ctx, code); err != nil {
+		return nil, err
+	}
+	return &ProbeResult{
+		Code: code, Source: s.Name(),
+		Variants: []VariantInfo{{Kind: "normal", Label: "原片", Available: true}},
+	}, nil
+}
+
+// ResolveVariant 实现 VariantResolver：单版本，仅支持 normal。
+func (s *HohoJSource) ResolveVariant(ctx context.Context, code, variant string) ([]Stream, error) {
+	if variant != "" && variant != "normal" {
+		return nil, fmt.Errorf("%w: hohoj variant %s", ErrNotFound, variant)
+	}
+	return s.Resolve(ctx, code)
+}
+
 var _ Source = (*HohoJSource)(nil)
+var _ Prober = (*HohoJSource)(nil)
+var _ VariantResolver = (*HohoJSource)(nil)

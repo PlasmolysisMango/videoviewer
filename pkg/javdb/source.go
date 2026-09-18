@@ -114,8 +114,12 @@ type CategoryQuery struct {
 	DownloadableOnly bool
 	WithSubtitle     bool
 	// SoloOnly restricts to works where the actor appears alone (演员页
-	// filter_tags 的「單體作品」main flag s；共演无对应 flag，需客户端差集)。
+	// filter_tags 的「單體作品」main flag s；共演无对应 flag，需客户端差集）。
 	SoloOnly bool
+	// SortBy 请求 app API 服务端排序（/v1/movies/tags 的 sort_by/order_by）；
+	// 空=端点默认（实体 release desc / 标签 hit desc）。web 后端无对应能力，
+	// 回退路径由调用方客户端排序。
+	SortBy SortBy
 	Page
 }
 

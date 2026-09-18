@@ -231,6 +231,10 @@ type Movie struct {
 	Score        float64  `json:"score,omitempty"`
 	RateText     string   `json:"rate_text,omitempty"`
 	Ratings      int      `json:"ratings_count,omitempty"`
+	// Comments/Wants 来自列表行的 comments_count/want_watch_count（上游
+	// 可能省略为零值）；供“最多评论/最热门”排序使用。
+	Comments     int      `json:"comments_count,omitempty"`
+	Wants        int      `json:"wants_count,omitempty"`
 	MagnetsCount int      `json:"magnets_count,omitempty"`
 	HasCNSub     bool     `json:"has_cnsub,omitempty"`
 	CanPlay      bool     `json:"can_play,omitempty"`

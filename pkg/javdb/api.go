@@ -564,10 +564,15 @@ func (b *apiBackend) CategoryMovies(ctx context.Context, q CategoryQuery) (*Sear
 	default:
 		return nil, fmt.Errorf("%w: api category listing (tags/entity only)", ErrUnsupported)
 	}
+	// 通用排序值映射到端点的 sort_by/order_by；空值维持端点默认。
+	order := "desc"
+	if q.SortBy != "" {
+		sortBy, order = apiCategorySort(q.SortBy, sortBy)
+	}
 	params := url.Values{
 		"filter_by": {mask},
 		"sort_by":   {sortBy},
-		"order_by":  {"desc"},
+		"order_by":  {order},
 		"page":      {strconv.Itoa(q.pageOrDefault(1))},
 		"limit":     {strconv.Itoa(q.limitOrDefault(20))},
 	}
@@ -610,6 +615,37 @@ func (b *apiBackend) CategoryMovies(ctx context.Context, q CategoryQuery) (*Sear
 		return nil, fmt.Errorf("%w: api tag browse %v", ErrEmptyResult, q.TagIDs)
 	}
 	return res, nil
+}
+
+// apiCategorySort 将通用排序值映射到 /v1/movies/tags 的 sort_by/order_by。
+// fallback 是该查询形态的端点默认值（实体 release / 标签 hit）；
+// 未识别的排序值回退 fallback，由调用方客户端排序兜底。
+// 上游实测（2026-09，演员/系列实体页）：支持 release（±asc/desc）、
+// score（方向固定 desc，asc 被忽略）、hit；comments/likes/dd 等取值
+// 均被忽略回默认。因此 SortLowest（score asc）与 SortMostComments
+// 无可靠服务端排序，回退端点默认，由调用方客户端兜底。
+func apiCategorySort(s SortBy, fallback string) (sortBy, order string) {
+	order = "desc"
+	switch s {
+	case SortNewest:
+		return "release", "desc"
+	case SortOldest:
+		return "release", "asc"
+	case SortHighest:
+		return "score", "desc"
+	case SortMostPlayed, SortMostWatched:
+		return "hit", "desc"
+	default:
+		// 实验用：raw:<sortBy>[:<order>] 直接透传给上游，便于校准映射。
+		if raw, ok := strings.CutPrefix(string(s), "raw:"); ok {
+			parts := strings.Split(raw, ":")
+			if len(parts) == 2 {
+				return parts[0], parts[1]
+			}
+			return raw, order
+		}
+		return fallback, order
+	}
 }
 
 // apiCategoryEntity maps an entity scope onto its filter_by letter

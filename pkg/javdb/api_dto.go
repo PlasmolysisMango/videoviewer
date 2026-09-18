@@ -28,9 +28,15 @@ type apiMovie struct {
 	HasPreviewVideo  bool            `json:"has_preview_video"`
 	HasPreviewImages bool            `json:"has_preview_images"`
 	NewMagnets       bool            `json:"new_magnets"`
-	PreviewImages    []apiPreview    `json:"preview_images"`
-	Tags             []apiNameID     `json:"tags"`
-	Actors           json.RawMessage `json:"actors"`
+	// 计数字段：列表端点可能省略（零值），详情端点必带；放在嵌入结构
+	// 让列表行与 /v4 详情共用同一套解码。
+	ReviewsCount   int `json:"reviews_count"`
+	CommentsCount  int `json:"comments_count"`
+	WantWatchCount int `json:"want_watch_count"`
+	WatchedCount   int `json:"watched_count"`
+	PreviewImages  []apiPreview   `json:"preview_images"`
+	Tags           []apiNameID    `json:"tags"`
+	Actors         json.RawMessage `json:"actors"`
 }
 
 type apiPreview struct {
@@ -50,14 +56,10 @@ func (p apiNameID) idString() string {
 // apiMovieDTO is the richer /v4/movies/{id} payload.
 type apiMovieDTO struct {
 	apiMovie
-	Type            int             `json:"type"`
-	Summary         string          `json:"summary"`
-	NumberLetter    json.RawMessage `json:"number_letter"`
-	ReviewsCount    int             `json:"reviews_count"`
-	CommentsCount   int             `json:"comments_count"`
-	WantWatchCount  int             `json:"want_watch_count"`
-	WatchedCount    int             `json:"watched_count"`
-	MakerID         json.RawMessage `json:"maker_id"`
+	Type         int             `json:"type"`
+	Summary      string          `json:"summary"`
+	NumberLetter json.RawMessage `json:"number_letter"`
+	MakerID      json.RawMessage `json:"maker_id"`
 	MakerName       string          `json:"maker_name"`
 	PublisherID     json.RawMessage `json:"publisher_id"`
 	PublisherName   string          `json:"publisher_name"`
@@ -88,6 +90,8 @@ func (m apiMovie) toMovie(site string) Movie {
 		Duration:     int(ParseFloat(rawToString(m.Duration))),
 		Score:        ParseFloat(rawToString(m.Score)),
 		MagnetsCount: m.MagnetsCount,
+		Comments:     m.CommentsCount,
+		Wants:        m.WantWatchCount,
 		HasCNSub:     m.HasCNSub,
 		CanPlay:      m.CanPlay,
 		NewMagnets:   m.NewMagnets,

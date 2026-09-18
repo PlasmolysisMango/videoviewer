@@ -27,6 +27,12 @@ func NewJableSource(hc *HTTPClient, domain string) *JableSource {
 	return &JableSource{http: hc, domain: domain}
 }
 
+// jableSlug 与 MissAV 同规则：URL slug 用番号尾部数字补零到三位的小写形式
+// （SSIS-41 → ssis-041），未补零会 404。
+func jableSlug(code string) string {
+	return strings.ToLower(padCodeDigits(code))
+}
+
 // Name 实现 Source。
 func (s *JableSource) Name() string { return "jable" }
 
@@ -73,10 +79,10 @@ func (s *JableSource) list(ctx context.Context, u string, q Query) ([]Video, err
 	return applyLimit(videos, q.Limit), nil
 }
 
-// Detail 实现 Source：/videos/{code}/
+// Detail 实现 Source：/videos/{slug}/
 func (s *JableSource) Detail(ctx context.Context, code string) (*Video, error) {
 	code = normalizeCode(code)
-	pageURL := fmt.Sprintf("%s/videos/%s/", s.base(), strings.ToLower(code))
+	pageURL := fmt.Sprintf("%s/videos/%s/", s.base(), jableSlug(code))
 	body, err := s.http.GetWithRetry(ctx, pageURL, s.base()+"/", 2)
 	if err != nil {
 		return nil, err
@@ -101,7 +107,7 @@ func (s *JableSource) Detail(ctx context.Context, code string) (*Video, error) {
 // Resolve 实现 Source：提取 hlsUrl → 流。
 func (s *JableSource) Resolve(ctx context.Context, code string) ([]Stream, error) {
 	code = normalizeCode(code)
-	pageURL := fmt.Sprintf("%s/videos/%s/", s.base(), strings.ToLower(code))
+	pageURL := fmt.Sprintf("%s/videos/%s/", s.base(), jableSlug(code))
 	body, err := s.http.GetWithRetry(ctx, pageURL, s.base()+"/", 2)
 	if err != nil {
 		return nil, err
@@ -121,4 +127,31 @@ func (s *JableSource) Resolve(ctx context.Context, code string) ([]Stream, error
 	return streams, nil
 }
 
+// Probe 实现 Prober：详情页可访问且内嵌 hlsUrl 即视为有“原片”（Jable 单版本）。
+func (s *JableSource) Probe(ctx context.Context, code string) (*ProbeResult, error) {
+	code = normalizeCode(code)
+	pageURL := fmt.Sprintf("%s/videos/%s/", s.base(), jableSlug(code))
+	body, err := s.http.GetWithRetry(ctx, pageURL, s.base()+"/", 2)
+	if err != nil {
+		return nil, err
+	}
+	if jableHlsRe.FindStringSubmatch(string(body)) == nil {
+		return nil, fmt.Errorf("%w: jable variants for %s", ErrNotFound, code)
+	}
+	return &ProbeResult{
+		Code: code, Source: s.Name(),
+		Variants: []VariantInfo{{Kind: "normal", Label: "原片", Available: true}},
+	}, nil
+}
+
+// ResolveVariant 实现 VariantResolver：单版本，仅支持 normal。
+func (s *JableSource) ResolveVariant(ctx context.Context, code, variant string) ([]Stream, error) {
+	if variant != "" && variant != "normal" {
+		return nil, fmt.Errorf("%w: jable variant %s", ErrNotFound, variant)
+	}
+	return s.Resolve(ctx, code)
+}
+
 var _ Source = (*JableSource)(nil)
+var _ Prober = (*JableSource)(nil)
+var _ VariantResolver = (*JableSource)(nil)

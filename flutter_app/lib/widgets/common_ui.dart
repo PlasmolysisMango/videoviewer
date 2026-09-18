@@ -1,8 +1,10 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../screens/actor_screen.dart';
 import '../screens/movie_detail_screen.dart';
+import '../screens/search_screen.dart';
 import '../services/image_url.dart';
 
 /// 跟随主题的卡片底色（浅色模式浅灰、深色模式深灰）。
@@ -154,10 +156,13 @@ class MovieCompactTile extends StatelessWidget {
                 width: 92,
                 height: 124,
                 child: cover != null
-                    ? Image.network(
-                        resolveImageUrl(cover),
+                    ? CachedNetworkImage(
+                        imageUrl: resolveImageUrl(cover),
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
+                        placeholder: (_, __) => Container(
+                          color: Theme.of(context).dividerColor,
+                        ),
+                        errorWidget: (_, __, ___) => Container(
                           color: Theme.of(context).dividerColor,
                           child: const Icon(Icons.movie, size: 28),
                         ),
@@ -267,10 +272,13 @@ class RankingMovieTile extends StatelessWidget {
                 width: 64,
                 height: 86,
                 child: cover != null
-                    ? Image.network(
-                        resolveImageUrl(cover),
+                    ? CachedNetworkImage(
+                        imageUrl: resolveImageUrl(cover),
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
+                        placeholder: (_, __) => Container(
+                          color: Theme.of(context).dividerColor,
+                        ),
+                        errorWidget: (_, __, ___) => Container(
                           color: Theme.of(context).dividerColor,
                           child: const Icon(Icons.movie, size: 28),
                         ),
@@ -360,7 +368,18 @@ class RankingActorTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       borderRadius: BorderRadius.circular(14),
-      onTap: () {}, // 预留：跳演员详情
+      onTap: () {
+        if (actor.id.isNotEmpty) {
+          pushActorScreen(context, actor);
+        } else {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => SearchScreen(initialQuery: actor.name),
+            ),
+          );
+        }
+      },
       child: Container(
         decoration: cardDecoration(context),
         padding: const EdgeInsets.all(12),
@@ -434,10 +453,12 @@ class MovieGridCard extends StatelessWidget {
                 fit: StackFit.expand,
                 children: [
                   if (cover != null)
-                    Image.network(
-                      resolveImageUrl(cover),
+                    CachedNetworkImage(
+                      imageUrl: resolveImageUrl(cover),
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
+                      placeholder: (_, __) =>
+                          Container(color: cardColor(context)),
+                      errorWidget: (_, __, ___) => Container(
                         color: cardColor(context),
                         child: const Icon(Icons.movie, size: 40),
                       ),
@@ -545,15 +566,15 @@ const searchSortOptions = [
   SortOption('most_magnets', '最多磁链'),
 ];
 
-/// 演员作品页可用的排序选项（后端为客户端排序，无“相关度”）。
+/// 演员作品页可用的排序选项。后端透传 app API 服务端排序
+///（release/score/hit）；上游无对应取值的选项（最多评论、最低评分：
+/// 列表行无该数据，选了也不生效）已移除。
 const actorSortOptions = [
   SortOption('', '默认'),
   SortOption('most_played', '最多播放'),
-  SortOption('most_comments', '最多评论'),
+  SortOption('highest', '最高评分'),
   SortOption('newest', '最新发行'),
   SortOption('oldest', '最早发行'),
-  SortOption('highest', '最高评分'),
-  SortOption('lowest', '最低评分'),
   SortOption('most_magnets', '最多磁链'),
 ];
 

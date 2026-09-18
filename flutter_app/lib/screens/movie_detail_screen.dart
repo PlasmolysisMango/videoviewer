@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
@@ -6,6 +9,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../providers/subscription_provider.dart';
 import '../services/backend_launcher.dart';
+import '../services/data_cache.dart';
 import '../services/history.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
@@ -34,11 +38,16 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   List<Magnet> _magnets = [];
   // 相似推荐：[{"movie": {...}, "reason": "..."}]，异步拉取失败静默
   List<Map<String, dynamic>> _similar = [];
-  // JavDB 用户评论：后端聚合全量返回，失败静默；
-  // 排序切换用 _reviewsRaw 本地重排，不再重复拉取。
+  // JavDB 用户评论：按需分页拉取（首屏只拉一页，滚动加载更多，无上限）。
+  // hotly 用服务端热度序（各页全局有序，追加即保序）；
+  // latest 对累计数据本地重排（加载越多越准）。
   List<Map<String, dynamic>> _reviews = [];
   List<Map<String, dynamic>> _reviewsRaw = [];
-  int _reviewTotal = 0;
+  int _reviewTotal = 0; // 已加载条数
+  int _serverReviewTotal = 0; // 服务端报告的真实总数（0 = 未知）
+  int _reviewPage = 0;
+  bool _hasMoreReviews = false;
+  bool _reviewsLoadingMore = false;
   String _reviewSort = 'hotly';
   bool _reviewsLoading = false;
   Map<String, dynamic>? _avData;
@@ -50,6 +59,11 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   String _selectedVariant = 'uncensored';
   // 片源选择（missav / jable / hohoj）
   List<String> _availableSources = [];
+  // 所有源都探测不到可用变体（或解析全部失败）时为 true，展示“无播放源”。
+  bool _noSource = false;
+  // 探测/解析的世代计数：切源或重新加载后作废旧异步结果，防止竞态回写。
+  int _probeGeneration = 0;
+  int _resolveGeneration = 0;
   String _selectedSource = '';
   String? _streamError; // 片源解析错误信息
   bool _resolving = false; // 点击播放后按需解析中的加载态（按钮图标）
@@ -100,45 +114,97 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   }
 
   Future<void> _loadMovie() async {
+    // 先查缓存（{movie, magnets} 原始 JSON）：命中即秒出，后台再拉
+    // 最新数据刷新（stale-while-revalidate）；未命中走正常加载。
+    try {
+      final cached = await DataCache.instance
+          .read('movie.${widget.movieId}', maxAge: const Duration(hours: 6));
+      if (cached is Map && cached['movie'] is Map) {
+        final result = (cached).cast<String, dynamic>();
+        if (!mounted) return;
+        setState(() => _applyMovieData(result));
+        _loadMovieFresh();
+        return;
+      }
+    } catch (_) {}
+    await _loadMovieFresh();
+  }
+
+  /// 从网络拉最新详情并写缓存；已有缓存内容时失败静默。
+  Future<void> _loadMovieFresh() async {
     try {
       AppLogger.info('Loading movie: ${widget.movieId}');
       final result = await _client.getMovie(widget.movieId);
-      final magnetsList = <Magnet>[];
-
-      // Handle both single magnet (Map) and list of magnets
-      final magnetsData = result['magnets'];
-      if (magnetsData != null) {
-        if (magnetsData is List) {
-          magnetsList.addAll(magnetsData
-              .map((m) => Magnet.fromJson(m as Map<String, dynamic>)));
-        } else if (magnetsData is Map) {
-          magnetsList.add(Magnet.fromJson(magnetsData as Map<String, dynamic>));
-        }
-      }
-
-      setState(() {
-        _movieData = result['movie'] as Map<String, dynamic>?;
-        _magnets = magnetsList;
-        _isLoading = false;
-      });
-      // 元信息就绪，补全历史条目（番号/标题/封面，进度合并）。
-      final m = _movieData;
-      if (m != null) {
-        HistoryService.recordView(
-          id: widget.movieId,
-          number: (m['number'] as String?) ?? '',
-          title: (m['title'] as String?) ?? '',
-          cover: (m['cover_url'] as String?) ?? '',
-        );
-      }
-      AppLogger.info(
-          'Movie loaded: ${_movieData?['number']}, magnets: ${_magnets.length}');
+      unawaited(DataCache.instance
+          .write('movie.${widget.movieId}', result));
+      if (!mounted) return;
+      setState(() => _applyMovieData(result));
     } catch (e) {
-      setState(() {
-        _error = e.toString();
-        _isLoading = false;
-      });
+      if (mounted && _movieData == null) {
+        setState(() {
+          _error = e.toString();
+          _isLoading = false;
+        });
+      }
       AppLogger.error('Failed to load movie', e);
+    }
+  }
+
+  /// 应用详情数据（缓存/网络同一路径）：解析磁链、更新历史、预取画廊图。
+  void _applyMovieData(Map<String, dynamic> result) {
+    final magnetsList = <Magnet>[];
+
+    // Handle both single magnet (Map) and list of magnets
+    final magnetsData = result['magnets'];
+    if (magnetsData != null) {
+      if (magnetsData is List) {
+        magnetsList.addAll(magnetsData
+            .map((m) => Magnet.fromJson((m as Map).cast<String, dynamic>())));
+      } else if (magnetsData is Map) {
+        magnetsList
+            .add(Magnet.fromJson(magnetsData.cast<String, dynamic>()));
+      }
+    }
+
+    _movieData = result['movie'] as Map<String, dynamic>?;
+    _magnets = magnetsList;
+    _isLoading = false;
+    // 元信息就绪，补全历史条目（番号/标题/封面，进度合并）。
+    final m = _movieData;
+    if (m != null) {
+      HistoryService.recordView(
+        id: widget.movieId,
+        number: (m['number'] as String?) ?? '',
+        title: (m['title'] as String?) ?? '',
+        cover: (m['cover_url'] as String?) ?? '',
+      );
+    }
+    AppLogger.info(
+        'Movie loaded: ${_movieData?['number']}, magnets: ${_magnets.length}');
+    _precacheGallery();
+  }
+
+  /// 画廊全部图 URL（封面在前，预览大图随后）。
+  List<String> _galleryUrls() {
+    final m = _movieData;
+    if (m == null) return const [];
+    final urls = <String>[];
+    final cover = m['cover_url'] as String?;
+    if (cover != null && cover.isNotEmpty) urls.add(cover);
+    final previews =
+        (m['preview_images'] as List<dynamic>?)?.cast<String>() ??
+            const <String>[];
+    urls.addAll(previews.where((u) => u.isNotEmpty));
+    return urls;
+  }
+
+  /// 预取画廊前几张图（cached_network_image 落盘，二次进入零等待）。
+  void _precacheGallery() {
+    if (!mounted) return;
+    final urls = _galleryUrls();
+    for (final u in urls.take(4)) {
+      precacheImage(
+          CachedNetworkImageProvider(resolveImageUrl(u)), context);
     }
   }
 
@@ -165,8 +231,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       final result = await _client.avDetail(widget.movieNumber, source: source);
       setState(() {
         _avData = result['video'] as Map<String, dynamic>?;
-        // 先展示占位变体，随后用搜索接口探测真实变体并刷新按钮
+        // 先展示占位变体，随后用搜索接口逐源探测真实变体并刷新按钮
         _availableVariants = _defaultVariants;
+        _noSource = false;
         _streamError = null;
       });
       AppLogger.info('AV data loaded, m3u8: ${_avData?['m3u8']}');
@@ -177,49 +244,72 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     }
   }
 
-  /// 进入详情页即探测可用变体：一次搜索请求拿到该番号的全部变体页面，
-  /// 没有「无码」就不展示无码按钮，按 无码 → 中字 → 原片 排序。
-  /// 探测失败静默保留占位符，不影响播放（点击播放仍按需解析）。
+  /// 逐源探测可用变体：当前源返回空/失败即换下一源（missav → jable →
+  /// hohoj），全部无结果时进入“无播放源”状态。探测不阻塞详情页。
   Future<void> _probeVariants() async {
     final number = widget.movieNumber;
     if (number.isEmpty) return;
+    final gen = ++_probeGeneration;
     final srcAtStart = _selectedSource;
-    try {
-      final source = srcAtStart.isNotEmpty ? srcAtStart : null;
-      final result = await _client.avProbe(number, source: source);
-      // 探测期间用户切换了片源：结果属于旧源，丢弃（切源会重新探测）
-      if (_selectedSource != srcAtStart || !mounted) return;
-      const order = ['uncensored', 'cnsub', 'normal'];
-      final kinds = <String>[];
-      for (final v in (result['variants'] as List? ?? const [])) {
-        final m = v as Map<String, dynamic>;
-        final kind = (m['kind'] as String?) ?? '';
-        final available = (m['available'] as bool?) ?? true;
-        if (!available || !order.contains(kind) || kinds.contains(kind)) {
-          continue;
-        }
-        kinds.add(kind);
+    // 探测顺序：当前选中源优先，其余按 _availableSources 顺序
+    final order = _sourceOrder(startWith: srcAtStart);
+    for (final source in order) {
+      Map<String, dynamic> result;
+      try {
+        result = await _client.avProbe(number, source: source);
+      } catch (e) {
+        AppLogger.info('Probe $number on $source failed: $e');
+        continue; // 探测失败视为此源不可用，换下一源
       }
-      kinds.sort((a, b) => order.indexOf(a).compareTo(order.indexOf(b)));
-      if (kinds.isEmpty) return;
+      if (gen != _probeGeneration || !mounted) return; // 已被新探测/切源作废
+      final kinds = _kindsFromProbe(result);
+      if (kinds.isEmpty) continue; // 此源无此片，换下一源
       setState(() {
+        if (_selectedSource != source) _selectedSource = source;
         _availableVariants = kinds;
-        // 占位选中的变体不存在时，改选探测到的第一个
         if (!kinds.contains(_selectedVariant)) {
           _selectedVariant = kinds.first;
         }
+        _noSource = false;
       });
-      AppLogger.info('Probed variants for $number: $kinds');
-    } catch (e) {
-      AppLogger.info('Probe variants failed, keep placeholders: $e');
+      AppLogger.info('Probed variants for $number on $source: $kinds');
+      return;
     }
+    if (gen != _probeGeneration || !mounted) return;
+    setState(() => _noSource = true); // 所有源都没有可用变体
+    AppLogger.info('No playable source for $number');
   }
 
-  /// 按需拉取指定变体的播放流（惰性加载）。
-  /// 仅在用户点击播放时调用，避免进入详情页后立即发起网络请求。
-  Future<void> _resolveVariant(String variant) async {
+  /// 源尝试顺序：startWith（当前源）优先，其余按 _availableSources 顺序。
+  List<String> _sourceOrder({String? startWith}) {
+    final cur = startWith ?? '';
+    return [
+      if (cur.isNotEmpty) cur,
+      ..._availableSources.where((s) => s != cur),
+    ];
+  }
+
+  /// 从 probe 响应提取可用变体（按 无码→中字→原片 排序）。
+  static List<String> _kindsFromProbe(Map<String, dynamic> result) {
+    const order = ['uncensored', 'cnsub', 'normal'];
+    final kinds = <String>[];
+    for (final v in (result['variants'] as List? ?? const [])) {
+      final m = v as Map<String, dynamic>;
+      final kind = (m['kind'] as String?) ?? '';
+      final available = (m['available'] as bool?) ?? true;
+      if (!available || !order.contains(kind) || kinds.contains(kind)) {
+        continue;
+      }
+      kinds.add(kind);
+    }
+    kinds.sort((a, b) => order.indexOf(a).compareTo(order.indexOf(b)));
+    return kinds;
+  }
+
+  /// 按需拉取指定源+变体的播放流（惰性加载），结果存入 _streamsByVariant。
+  /// 失败只记 _streamError（由调用方决定是否级联下一源/提示）。
+  Future<void> _resolveVariantOn(String source, String variant) async {
     try {
-      final source = _selectedSource.isNotEmpty ? _selectedSource : null;
       final result = await _client.avResolve(
         widget.movieNumber,
         source: source,
@@ -234,11 +324,10 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         _streamsByVariant[variant] = sorted;
         _streamError = null;
       });
-      AppLogger.info('Resolved $variant: ${sorted.length} streams');
+      AppLogger.info('Resolved $variant on $source: ${sorted.length} streams');
     } catch (e) {
-      final msg = e.toString();
-      setState(() => _streamError = msg);
-      AppLogger.error('Resolve variant $variant failed', e);
+      setState(() => _streamError = e.toString());
+      AppLogger.error('Resolve variant $variant on $source failed', e);
     }
   }
 
@@ -265,7 +354,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       _streamsByVariant = {};
       _availableVariants = _defaultVariants;
       _selectedVariant = 'uncensored';
+      _noSource = false;
       _streamError = null;
+      _probeGeneration++; // 作废旧探测循环，避免旧源结果回写
     });
     _loadAvData();
   }
@@ -315,7 +406,33 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
 
   /// 播放按钮旁的变体下拉：单变体也展示（下拉里只有一项，如「原片」），
   /// 让用户明确该片源的可用变体，而不是下拉消失让人误以为探测失效。
+  /// 所有源都探测/解析失败时，不再展示占位变体（避免误以为有可用变体），
+  /// 改为「无播放源」提示。
   Widget _buildVariantSelector() {
+    if (_noSource) {
+      return Container(
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          border: Border.all(
+              color: Theme.of(context).colorScheme.outlineVariant),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.videocam_off_outlined,
+                size: 18, color: Theme.of(context).colorScheme.error),
+            const SizedBox(width: 6),
+            Text('无播放源',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.error)),
+          ],
+        ),
+      );
+    }
     return PopupMenuButton<String>(
       tooltip: '选择变体',
       onSelected: (v) => setState(() => _selectedVariant = v),
@@ -360,31 +477,43 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   }
 
   Future<void> _playVideo() async {
-    // 惰性加载：如果该变体的流尚未解析，先按需拉取。
-    // 解析中不弹任何提示（避免遮挡画面），仅在播放按钮上显示加载图标；
-    // 失败时才用 SnackBar 提示。
+    // 惰性加载：如果该变体的流尚未解析，先逐源级联解析（当前源优先，
+    // 失败/无流自动换下一源）；全部失败再试 avDetail 带回的直连 m3u8，
+    // 仍无流则提示无播放源。
     var streams = List<VideoStream>.from(
         _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
     if (streams.isEmpty) {
       setState(() => _resolving = true);
       try {
-        await _resolveVariant(_selectedVariant);
-        streams = List<VideoStream>.from(
-            _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
+        final gen = ++_resolveGeneration;
+        for (final source in _sourceOrder(startWith: _selectedSource)) {
+          await _resolveVariantOn(source, _selectedVariant);
+          if (gen != _resolveGeneration || !mounted) return;
+          streams = List<VideoStream>.from(
+              _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
+          if (streams.isNotEmpty) {
+            // 级联换源成功时让片源选择器跟随实际生效的源
+            if (_selectedSource != source) {
+              setState(() => _selectedSource = source);
+            }
+            break;
+          }
+        }
         if (streams.isEmpty) {
           final m3u8Url = _avData?['m3u8'] as String?;
-          if (m3u8Url == null || m3u8Url.isEmpty) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content: Text(_streamError != null
-                        ? '视频源不可用: $_streamError'
-                        : '视频源不可用')),
-              );
-            }
-            return;
+          if (m3u8Url != null && m3u8Url.isNotEmpty) {
+            streams.add(VideoStream(url: m3u8Url));
           }
-          streams.add(VideoStream(url: m3u8Url));
+        }
+        if (streams.isEmpty && mounted) {
+          setState(() => _noSource = true);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text(_streamError != null
+                    ? '所有视频源均无可用播放流（最后错误: $_streamError）'
+                    : '所有视频源均无可用播放流')),
+          );
+          return;
         }
       } finally {
         if (mounted) setState(() => _resolving = false);
@@ -606,15 +735,30 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           height: 300,
           child: PageView.builder(
             itemCount: urls.length,
-            onPageChanged: (i) => setState(() => _galleryPage = i),
+            onPageChanged: (i) {
+              setState(() => _galleryPage = i);
+              // 翻页时预取后两张，继续滑动即点即显
+              for (var k = i + 1; k <= i + 2 && k < urls.length; k++) {
+                precacheImage(
+                    CachedNetworkImageProvider(resolveImageUrl(urls[k])),
+                    context);
+              }
+            },
             itemBuilder: (context, i) {
               return GestureDetector(
                 onTap: () => _openImageViewer(urls, i),
                 child: Center(
-                  child: Image.network(
-                    resolveImageUrl(urls[i]),
+                  child: CachedNetworkImage(
+                    imageUrl: resolveImageUrl(urls[i]),
                     fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) =>
+                    placeholder: (_, __) => const Center(
+                      child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child:
+                              CircularProgressIndicator(strokeWidth: 2)),
+                    ),
+                    errorWidget: (_, __, ___) =>
                         const Icon(Icons.movie, size: 100),
                   ),
                 ),
@@ -739,7 +883,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: _resolving ? null : _playVideo,
+                  onPressed: (_resolving || _noSource) ? null : _playVideo,
                   icon: _resolving
                       ? const SizedBox(
                           width: 18,
@@ -903,7 +1047,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
-  /// JavDB 评论：与详情主内容并行拉取；失败或无评论整块隐藏。
+  /// JavDB 评论：与详情主内容并行拉取；首屏只拉第一页，其余按需加载。
   Future<void> _loadReviews() async {
     setState(() => _reviewsLoading = true);
     try {
@@ -916,7 +1060,10 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       if (!mounted) return;
       setState(() {
         _reviews = _reviewsRaw = list;
-        _reviewTotal = list.length; // 后端全量聚合，列表即真实总数
+        _reviewPage = 1;
+        _reviewTotal = list.length;
+        _serverReviewTotal = (result['total'] as num?)?.toInt() ?? 0;
+        _hasMoreReviews = list.length >= 10;
         _reviewsLoading = false;
       });
     } catch (e) {
@@ -926,23 +1073,60 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     }
   }
 
-  /// 排序切换：全量评论已在本地，直接重排（hotly=点赞降序，
-  /// latest=日期降序），与后端 sortReviewSlice 同语义。
+  /// 加载下一页评论并入累计列表（按 id 去重），随后按当前排序方式重排。
+  Future<void> _loadMoreReviews() async {
+    if (_reviewsLoadingMore || !_hasMoreReviews) return;
+    setState(() => _reviewsLoadingMore = true);
+    try {
+      final result = await _client.getReviews(widget.movieId,
+          sort: _reviewSort, page: _reviewPage + 1);
+      final more = (result['reviews'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .toList() ??
+          const <Map<String, dynamic>>[];
+      if (!mounted) return;
+      setState(() {
+        _reviewPage += 1;
+        final seen = _reviewsRaw.map((r) => (r['id'] as String?) ?? '').toSet();
+        final fresh = more
+            .where((r) => !seen.contains((r['id'] as String?) ?? ''))
+            .toList();
+        _reviewsRaw = [..._reviewsRaw, ...fresh];
+        _reviewTotal = _reviewsRaw.length;
+        final srv = (result['total'] as num?)?.toInt() ?? 0;
+        if (srv > 0) _serverReviewTotal = srv;
+        _hasMoreReviews = fresh.isNotEmpty &&
+            more.length >= 10 &&
+            (_serverReviewTotal <= 0 || _reviewTotal < _serverReviewTotal);
+        _applyReviewSortQuiet();
+        _reviewsLoadingMore = false;
+      });
+    } catch (e) {
+      AppLogger.warning('Failed to load more reviews: $e');
+      if (!mounted) return;
+      setState(() => _reviewsLoadingMore = false);
+    }
+  }
+
+  /// 排序切换：hotly 恢复服务端热度序（_reviewsRaw 的累计顺序即热度序）；
+  /// latest 按日期降序重排。评论全量已在服务端按热度全局排序，
+  /// 追加页天然保序，无需重新请求。
   void _applyReviewSort() {
-    final list = [..._reviewsRaw];
-    int cmp(Map<String, dynamic> a, Map<String, dynamic> b) {
-      if (_reviewSort == 'latest') {
+    setState(_applyReviewSortQuiet);
+  }
+
+  void _applyReviewSortQuiet() {
+    if (_reviewSort == 'latest') {
+      final list = [..._reviewsRaw];
+      list.sort((a, b) {
         final da = a['date'] as String? ?? '';
         final db = b['date'] as String? ?? '';
         return db.compareTo(da);
-      }
-      final la = (a['likes'] as num?)?.toInt() ?? 0;
-      final lb = (b['likes'] as num?)?.toInt() ?? 0;
-      return lb.compareTo(la);
+      });
+      _reviews = list;
+    } else {
+      _reviews = List.of(_reviewsRaw);
     }
-
-    list.sort(cmp);
-    setState(() => _reviews = list);
   }
 
   /// 评论区块：标题 + 最热/最新切换 + 评论卡片列；无数据整块隐藏。
@@ -953,7 +1137,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       children: [
         Row(
           children: [
-            Text(_reviewTotal > 0 ? '评论 ($_reviewTotal)' : '评论',
+            Text(_serverReviewTotal > 0
+                    ? '评论 ($_serverReviewTotal)'
+                    : (_reviewTotal > 0 ? '评论 ($_reviewTotal)' : '评论'),
                 style: const TextStyle(
                     fontSize: 16, fontWeight: FontWeight.bold)),
             const Spacer(),
@@ -973,7 +1159,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                 setState(() {
                   _reviewSort = sel.first;
                 });
-                _applyReviewSort(); // 全量已在本地，客户端重排免重拉
+                _applyReviewSort(); // 累计数据本地重排，无需重拉
               },
             ),
           ],
@@ -989,8 +1175,34 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                   child: CircularProgressIndicator(strokeWidth: 2)),
             ),
           )
-        else
+        else ...[
           ..._reviews.map(_buildReviewCard),
+          if (_hasMoreReviews)
+            Center(
+              child: TextButton.icon(
+                onPressed: _reviewsLoadingMore ? null : _loadMoreReviews,
+                icon: _reviewsLoadingMore
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.expand_more, size: 18),
+                label: Text(_reviewsLoadingMore
+                    ? '加载中...'
+                    : '加载更多评论 ($_reviewTotal${_serverReviewTotal > 0 ? '/$_serverReviewTotal' : ''})'),
+              ),
+            )
+          else if (_reviews.length >= 10)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Center(
+                child: Text('已加载全部 $_reviewTotal 条评论',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.outline)),
+              ),
+            ),
+        ],
       ],
     );
   }
@@ -1139,10 +1351,12 @@ class _ImageViewerScreenState extends State<_ImageViewerScreen> {
           return InteractiveViewer(
             maxScale: 5,
             child: Center(
-              child: Image.network(
-                resolveImageUrl(widget.urls[i]),
+              child: CachedNetworkImage(
+                imageUrl: resolveImageUrl(widget.urls[i]),
                 fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => const Icon(Icons.broken_image,
+                placeholder: (_, __) => const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+                errorWidget: (_, __, ___) => const Icon(Icons.broken_image,
                     size: 80, color: Colors.white38),
               ),
             ),

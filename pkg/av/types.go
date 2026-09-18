@@ -218,3 +218,26 @@ func highestBandwidth(streams []Stream) (Stream, bool) {
 func normalizeCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }
+
+// sameCode 比较两个番号是否等同，忽略尾部数字段的前导零
+//（SSIS-041 ≡ SSIS-41）：不同站点对同一影片的收录形式可能不同。
+func sameCode(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return stripCodeZeros(a) == stripCodeZeros(b)
+}
+
+// stripCodeZeros 去掉番号尾部数字段的前导零（SSIS-041 → SSIS-41）。
+func stripCodeZeros(code string) string {
+	c := strings.TrimSpace(code)
+	i := strings.LastIndexFunc(c, func(r rune) bool { return r < '0' || r > '9' })
+	if i < 0 || i == len(c)-1 {
+		return c // 无尾部数字段，无从去零
+	}
+	digits := strings.TrimLeft(c[i+1:], "0")
+	if digits == "" {
+		digits = "0"
+	}
+	return c[:i+1] + digits
+}

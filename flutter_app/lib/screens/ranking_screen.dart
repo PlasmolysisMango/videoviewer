@@ -33,6 +33,9 @@ class _RankingScreenState extends State<RankingScreen> {
   bool _isLoading = true;
   String? _error;
   late String _selectedKind;
+  /// 演员榜的类别维度（JavDB App 接口按 有码/无码/欧美/素人 分榜，
+  /// 顺序为官方当前时期热门排序，本地仅透传）。
+  String _actorCategory = 'censored';
 
   @override
   void initState() {
@@ -50,7 +53,8 @@ class _RankingScreenState extends State<RankingScreen> {
 
     try {
       AppLogger.info('Loading ranking: $_selectedKind');
-      final result = await _client.getRanking(_selectedKind);
+      final result = await _client.getRanking(_selectedKind,
+          category: _selectedKind == 'actors' ? _actorCategory : null);
       // 后端 movies/actors 互斥返回（演员榜只有 actors），需 null 安全解析
       final moviesList = (result['movies'] as List?)
               ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
@@ -79,6 +83,12 @@ class _RankingScreenState extends State<RankingScreen> {
   void _switchKind(String kind) {
     if (kind == _selectedKind) return;
     setState(() => _selectedKind = kind);
+    _loadRanking();
+  }
+
+  void _switchActorCategory(String category) {
+    if (category == _actorCategory) return;
+    setState(() => _actorCategory = category);
     _loadRanking();
   }
 
@@ -129,6 +139,31 @@ class _RankingScreenState extends State<RankingScreen> {
               }).toList(),
             ),
           ),
+          // 演员榜的类别切换（有码/无码/欧美/素人，对应 JavDB App 分榜）
+          if (_selectedKind == 'actors')
+            SizedBox(
+              height: 48,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                children: [
+                  for (final e in const {
+                    'censored': '有码',
+                    'uncensored': '无码',
+                    'western': '欧美',
+                    'amateur': '素人',
+                  }.entries)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        label: Text(e.value),
+                        selected: e.key == _actorCategory,
+                        onSelected: (_) => _switchActorCategory(e.key),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())

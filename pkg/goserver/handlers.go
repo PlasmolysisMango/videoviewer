@@ -149,7 +149,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 // mode 参数：空=全部；"solo"=单体作品（演员页 filter_tags 的 main flag s，
 // 服务端过滤）；"costar"=共演作品（API 无对应 flag，聚合全部与单体两侧
 // 全部页后做集合差，保持“全部”的原排序；上限各 5 页）。
-// 另支持 sort 参数进行客户端排序。
+// sort 参数：优先透传上游 sort_by（app API 服务端排序，实测支持
+// release±/score/hit，无评论/最低分取值）；上游已排序的方式跳过客户端
+// 重排（列表行无评分数据，客户端重排只会打乱上游结果）；其余方式
+//（most_magnets 行内有数据）继续客户端排序。
 func (s *Server) handleActorMovies(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 || parts[3] == "" {
@@ -217,7 +220,7 @@ func (s *Server) handleActorMovies(w http.ResponseWriter, r *http.Request) {
 		}
 		maxPage = 1 // 一次性全量返回，前端无需继续翻页
 	default: // "" 全部 / "solo" 单体（服务端 s flag 过滤）
-		q := javdb.CategoryQuery{ActorID: id, Page: javdb.Page{Page: page, Limit: limit}}
+		q := javdb.CategoryQuery{ActorID: id, Page: javdb.Page{Page: page, Limit: limit}, SortBy: sort}
 		if mode == "solo" {
 			q.SoloOnly = true
 		}
@@ -234,9 +237,19 @@ func (s *Server) handleActorMovies(w http.ResponseWriter, r *http.Request) {
 		}
 		movies = res.Movies
 		maxPage = res.MaxPage
+		if res.Source == "api" {
+			// 上游已服务端排序的方式（实测支持 release±/score/hit）跳过
+			// 客户端重排：列表行无评分/评论数据，客户端重排只会打乱结果。
+			switch sort {
+			case javdb.SortNewest, javdb.SortOldest, javdb.SortHighest,
+				javdb.SortMostPlayed, javdb.SortMostWatched:
+				sort = ""
+			}
+		}
 	}
 
-	// 客户端排序：在返回结果上按 sort 排序（costar 已保持“全部”原序）。
+	// 客户端排序：在返回结果上按 sort 排序（costar 已保持“全部”原序；
+	// 上游已服务端排序时 sort 已被置空）。
 	if sort != "" {
 		sortMovies(movies, sort)
 	}
@@ -405,8 +418,12 @@ func sortMovies(movies []javdb.Movie, sort javdb.SortBy) {
 				// 无直接播放/观看数字段，回退到评分
 				swap = movies[j].Score > movies[i].Score
 			case javdb.SortMostComments:
-				// 无独立评论数字段，回退到评分人数
-				swap = movies[j].Ratings > movies[i].Ratings
+				// 优先评论数（详情端才有），回退评分人数
+				cj, ci := movies[j].Comments, movies[i].Comments
+				if cj == 0 && ci == 0 {
+					cj, ci = movies[j].Ratings, movies[i].Ratings
+				}
+				swap = cj > ci
 			}
 			if swap {
 				movies[i], movies[j] = movies[j], movies[i]
@@ -769,11 +786,11 @@ func seriesPrefix(code string) string {
 	return code
 }
 
-// handleReviews serves JavDB user comments: GET /api/reviews/{id}?sort=hotly|latest。
-// 走 app API（公开可用）。该端点不支持服务端排序（实测所有 sort_by/order_by
-// 取值都返回同一顺序，默认即热度序），因此这里聚合拉取全部页（上限
-// maxReviewPages 页）后客户端排序：hotly 按点赞降序，latest 按日期降序。
-// 前端一次性拿到全部评论，同时解决旧版“只显示 10 条”与“最热/最新一样”。
+// handleReviews serves JavDB user comments: GET /api/reviews/{id}?sort=&page=。
+// 走 app API（公开可用）。按需拉取：每次只透传一页（默认 10 条），前端滚动
+// 加载更多，翻到末页为止（无上限）。该端点不支持服务端排序（实测所有
+// sort_by 取值同序，默认即热度序），hotly 直接用服务端热度序；latest 由
+// 前端对已加载的累计数据做本地重排，加载越多越准。
 func (s *Server) handleReviews(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 || parts[3] == "" {
@@ -781,60 +798,32 @@ func (s *Server) handleReviews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sort := r.URL.Query().Get("sort")
-	const maxReviewPages = 10
-	var reviews []javdb.Review
-	for page := 1; page <= maxReviewPages; page++ {
-		res, err := s.javdb.Reviews(r.Context(), javdb.ReviewQuery{
-			MovieID: parts[3],
-			Sort:    javdb.SortBy(sort),
-			Page:    javdb.Page{Page: page, Limit: 10},
-		})
-		if err != nil {
-			if page == 1 {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			break // 后续页翻越末页时报错即停
-		}
-		reviews = append(reviews, res.Reviews...)
-		if len(res.Reviews) < 10 {
-			break // 短页即末页
-		}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
 	}
-
-	// 客户端排序：端点忽略 sort_by（实测），默认顺序近似热度序。
-	sortReviewSlice(reviews, sort)
+	res, err := s.javdb.Reviews(r.Context(), javdb.ReviewQuery{
+		MovieID: parts[3],
+		Sort:    javdb.SortBy(sort),
+		Page:    javdb.Page{Page: page, Limit: 10},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	reviews := res.Reviews
 	if reviews == nil {
 		reviews = []javdb.Review{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"reviews":      reviews,
-		"total":        len(reviews),
-		"current_page": 1,
+		"total":        res.Total, // app 响应的真实总数（0 表示端点未返回）
+		"current_page": page,
 	})
 }
 
-// sortReviewSlice orders comments in place: "latest" by date desc, anything
-// else (default/hotly) by likes desc. Date strings are "YYYY-MM-DD" and thus
-// order correctly as plain strings; same-day entries keep the server's
-// hot-first order via the stable insertion sort.
-func sortReviewSlice(reviews []javdb.Review, sort string) {
-	if len(reviews) < 2 {
-		return
-	}
-	less := func(a, b javdb.Review) bool {
-		if sort == "latest" {
-			return a.Date > b.Date
-		}
-		return a.Likes > b.Likes
-	}
-	// 稳定插入排序：评论量级小（≤100），且保持服务端同分内的原始顺序。
-	for i := 1; i < len(reviews); i++ {
-		for j := i; j > 0 && less(reviews[j], reviews[j-1]); j-- {
-			reviews[j], reviews[j-1] = reviews[j-1], reviews[j]
-		}
-	}
-}
+// sortReviewSlice 已随评论聚合改为按需拉取而移除：服务端只透传单页，
+// hotly 用服务端热度序，latest 由前端对累计数据本地重排。
 
 func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	category := r.URL.Query().Get("category")
