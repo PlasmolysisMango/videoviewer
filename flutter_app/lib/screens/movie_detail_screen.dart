@@ -34,8 +34,10 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   List<Magnet> _magnets = [];
   // 相似推荐：[{"movie": {...}, "reason": "..."}]，异步拉取失败静默
   List<Map<String, dynamic>> _similar = [];
-  // JavDB 用户评论：失败静默，排序切换后重拉
+  // JavDB 用户评论：后端聚合全量返回，失败静默；
+  // 排序切换用 _reviewsRaw 本地重排，不再重复拉取。
   List<Map<String, dynamic>> _reviews = [];
+  List<Map<String, dynamic>> _reviewsRaw = [];
   int _reviewTotal = 0;
   String _reviewSort = 'hotly';
   bool _reviewsLoading = false;
@@ -913,12 +915,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           const <Map<String, dynamic>>[];
       if (!mounted) return;
       setState(() {
-        _reviews = list;
-        // app API 的 total 不可靠（可能为 0），取两者较大值保底展示数量
-        _reviewTotal =
-            ((result['total'] as num?)?.toInt() ?? 0) > list.length
-                ? (result['total'] as num).toInt()
-                : list.length;
+        _reviews = _reviewsRaw = list;
+        _reviewTotal = list.length; // 后端全量聚合，列表即真实总数
         _reviewsLoading = false;
       });
     } catch (e) {
@@ -926,6 +924,25 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       if (!mounted) return;
       setState(() => _reviewsLoading = false);
     }
+  }
+
+  /// 排序切换：全量评论已在本地，直接重排（hotly=点赞降序，
+  /// latest=日期降序），与后端 sortReviewSlice 同语义。
+  void _applyReviewSort() {
+    final list = [..._reviewsRaw];
+    int cmp(Map<String, dynamic> a, Map<String, dynamic> b) {
+      if (_reviewSort == 'latest') {
+        final da = a['date'] as String? ?? '';
+        final db = b['date'] as String? ?? '';
+        return db.compareTo(da);
+      }
+      final la = (a['likes'] as num?)?.toInt() ?? 0;
+      final lb = (b['likes'] as num?)?.toInt() ?? 0;
+      return lb.compareTo(la);
+    }
+
+    list.sort(cmp);
+    setState(() => _reviews = list);
   }
 
   /// 评论区块：标题 + 最热/最新切换 + 评论卡片列；无数据整块隐藏。
@@ -956,7 +973,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                 setState(() {
                   _reviewSort = sel.first;
                 });
-                _loadReviews();
+                _applyReviewSort(); // 全量已在本地，客户端重排免重拉
               },
             ),
           ],

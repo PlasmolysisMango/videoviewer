@@ -16,13 +16,14 @@ type persistedSession struct {
 	AppToken string `json:"app_token,omitempty"`
 }
 
-// sessionFile returns the session cache path (~/.videoviewer/session.json).
+// sessionFile returns the session cache path (<data>/session.json), where
+// <data> is the configured data dir or ~/.videoviewer on desktop.
 func sessionFile() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	dir, err := storageDir()
+	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".videoviewer", "session.json"), nil
+	return filepath.Join(dir, "session.json"), nil
 }
 
 // loadSession reads the persisted session. Absent or corrupt files are treated

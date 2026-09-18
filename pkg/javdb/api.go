@@ -635,8 +635,9 @@ func apiCategoryEntity(q CategoryQuery) (letter, ref string, ok bool) {
 }
 
 // apiMainFlags renders the filter_by main slot from the query flags:
-// m=downloadable (magnets), c=Chinese subtitles, comma-joined. The letters
-// were verified live; p (playable) exists but no query flag maps to it.
+// m=downloadable (magnets), c=Chinese subtitles, s=solo works (actor page's
+// 「單體作品」), comma-joined. The letters were verified live; p (playable)
+// exists but no query flag maps to it.
 func apiMainFlags(q CategoryQuery) string {
 	var flags []string
 	if q.DownloadableOnly {
@@ -644,6 +645,9 @@ func apiMainFlags(q CategoryQuery) string {
 	}
 	if q.WithSubtitle {
 		flags = append(flags, "c")
+	}
+	if q.SoloOnly {
+		flags = append(flags, "s")
 	}
 	return strings.Join(flags, ",")
 }

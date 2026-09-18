@@ -24,6 +24,8 @@ class _ActorScreenState extends State<ActorScreen> {
   List<Movie> _movies = [];
   MovieViewMode _viewMode = MovieViewMode.grid;
   String _sort = '';  // 当前排序方式
+  // 作品范围：空=全部 / 'solo'=单体 / 'costar'=共演（后端差集，一次性全量）
+  String _mode = '';
   bool _isLoading = true;
   bool _isLoadingMore = false;
   bool _hasMore = true;
@@ -55,24 +57,29 @@ class _ActorScreenState extends State<ActorScreen> {
     }
   }
 
-  Future<void> _loadFirstPage({String? sort}) async {
+  Future<void> _loadFirstPage({String? sort, String? mode}) async {
     final currentSort = sort ?? _sort;
+    final currentMode = mode ?? _mode;
     setState(() {
       _isLoading = true;
       _error = null;
     });
     try {
-      AppLogger.info('Loading actor movies: ${widget.actor.id}, sort=$currentSort');
+      AppLogger.info(
+          'Loading actor movies: ${widget.actor.id}, sort=$currentSort mode=$currentMode');
       final result = await _client.actorMovies(
         widget.actor.id,
         page: 1,
         sort: currentSort.isNotEmpty ? currentSort : null,
+        mode: currentMode.isNotEmpty ? currentMode : null,
       );
       _page = 1;
-      _hasMore = _moviesFrom(result).isNotEmpty;
+      final maxPage = (result['maxPage'] as num?)?.toInt() ?? 1;
+      _hasMore = _moviesFrom(result).isNotEmpty && maxPage > 1;
       setState(() {
         _movies = _moviesFrom(result);
         if (sort != null) _sort = sort;
+        if (mode != null) _mode = mode;
         _isLoading = false;
       });
     } catch (e) {
@@ -92,6 +99,7 @@ class _ActorScreenState extends State<ActorScreen> {
         widget.actor.id,
         page: next,
         sort: _sort.isNotEmpty ? _sort : null,
+        mode: _mode.isNotEmpty ? _mode : null,
       );
       final more = _moviesFrom(result);
       setState(() {
@@ -167,9 +175,33 @@ class _ActorScreenState extends State<ActorScreen> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-              child: Text(
-                _movies.isEmpty ? '暂无作品' : '作品 (${_movies.length}${_hasMore ? '+' : ''})',
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              child: Row(
+                children: [
+                  Text(
+                    _movies.isEmpty ? '暂无作品' : '作品 (${_movies.length}${_hasMore ? '+' : ''})',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const Spacer(),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: '', label: Text('全部')),
+                      ButtonSegment(value: 'solo', label: Text('单体')),
+                      ButtonSegment(value: 'costar', label: Text('共演')),
+                    ],
+                    selected: {_mode},
+                    showSelectedIcon: false,
+                    style: const ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onSelectionChanged: (sel) {
+                      final m = sel.first;
+                      if (m == _mode) return;
+                      _loadFirstPage(mode: m);
+                    },
+                  ),
+                ],
               ),
             ),
           ),

@@ -48,11 +48,11 @@ func subKey(s Subscription) string { return s.Kind + "|" + s.ID }
 var subsMu sync.Mutex
 
 func subscriptionsFile() string {
-	home, err := os.UserHomeDir()
+	dir, err := storageDir()
 	if err != nil {
 		return "subscriptions.json"
 	}
-	return filepath.Join(home, ".videoviewer", "subscriptions.json")
+	return filepath.Join(dir, "subscriptions.json")
 }
 
 func loadSubscriptions() []Subscription {

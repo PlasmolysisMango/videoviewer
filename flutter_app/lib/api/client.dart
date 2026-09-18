@@ -323,13 +323,20 @@ class JavDBClient {
   /// 演员的作品列表（演员专题页），支持分页和排序。
   /// sort 可选：newest / oldest / highest / most_magnets。
   Future<Map<String, dynamic>> actorMovies(String actorId,
-      {int page = 1, int limit = 20, String? sort}) async {
+      {int page = 1,
+      int limit = 20,
+      String? sort,
+      String? mode}) async {
     final params = <String, String>{
       'page': page.toString(),
       'limit': limit.toString(),
     };
     if (sort != null && sort.isNotEmpty) {
       params['sort'] = sort;
+    }
+    // mode: 空=全部 / 'solo'=单体作品（服务端过滤）/ 'costar'=共演作品（后端差集）
+    if (mode != null && mode.isNotEmpty) {
+      params['mode'] = mode;
     }
     final uri = Uri.parse('$baseUrl/api/actor-movies/$actorId')
         .replace(queryParameters: params);
@@ -345,13 +352,19 @@ class JavDBClient {
 
   // AV endpoints (MissAV/Jable/HohoJ)
 
+  static List<String>? _cachedSources; // 片源清单是静态数据，进程内缓存避免每次进详情页重复请求
+
   Future<List<String>> avSources() async {
+    final cached = _cachedSources;
+    if (cached != null) return cached;
     final uri = Uri.parse('$baseUrl/api/av/sources');
     final response = await http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
-      return (data['sources'] as List).cast<String>();
+      final sources = (data['sources'] as List).cast<String>();
+      _cachedSources = sources;
+      return sources;
     } else {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'Failed to get AV sources');

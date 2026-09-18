@@ -113,6 +113,9 @@ type CategoryQuery struct {
 	// makers/video_codes, t=d on actors).
 	DownloadableOnly bool
 	WithSubtitle     bool
+	// SoloOnly restricts to works where the actor appears alone (演员页
+	// filter_tags 的「單體作品」main flag s；共演无对应 flag，需客户端差集)。
+	SoloOnly bool
 	Page
 }
 

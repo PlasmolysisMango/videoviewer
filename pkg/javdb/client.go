@@ -612,6 +612,11 @@ func (c *Client) ActorMovies(ctx context.Context, idOrName string, p Page) (*Sea
 			id = a.ID
 		}
 	}
+	// app API 的实体类别端点覆盖演员作品（匿名可用），优先于 web HTML
+	// /actors/{id}（需有效 web 会话，未导入/过期即失败，白耗请求）。
+	if res, err := c.CategoryMovies(ctx, CategoryQuery{ActorID: id, Page: p}); err == nil {
+		return res, nil
+	}
 	v, err := call(ctx, c, "actor movies "+id, func(ctx context.Context, b Backend) (any, error) {
 		ad, ok := b.(ActorDetailer)
 		if !ok {
@@ -816,6 +821,12 @@ func (c *Client) resolveID(ctx context.Context, idOrCode string) (string, error)
 		return "", fmt.Errorf("%w: empty reference", ErrInvalidQuery)
 	}
 	if looksLikeID(token) {
+		return token, nil
+	}
+	// looksLikeID 漏判的 id（数字+大写如 5EWRKD、数字+小写如 824qk5）在这里
+	// 会被当番号大写化而查不到；与 Movie 的 token 路由保持一致：先原样按
+	// id 验证（app API 直查，404 则继续），失败再按番号解析。
+	if _, err := c.detailByID(ctx, token); err == nil {
 		return token, nil
 	}
 	m, err := c.FindByCode(ctx, token)

@@ -85,6 +85,10 @@ class MainActivity : FlutterActivity() {
             // The actual import will be: import goserver.Goserver
             // For now, we'll use reflection to avoid compile errors before gomobile bind
             val goserverClass = Class.forName("goserver.Goserver")
+            // HOME 在 Android 上指向不可写的共享存储（scoped storage），
+            // 持久化状态（session/订阅）改存应用私有目录
+            goserverClass.getMethod("setDataDir", String::class.java)
+                .invoke(null, filesDir.absolutePath)
             val startMethod = goserverClass.getMethod(
                 "startServer",
                 String::class.java,
