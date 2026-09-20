@@ -712,6 +712,9 @@ func (c *Client) Login(ctx context.Context, cred Credentials) error {
 // of logs and never commit them.
 func (c *Client) Session() (cookie, appToken string) { return c.t.session() }
 
+// ClearSession forgets the stored auth material (logout).
+func (c *Client) ClearSession() { c.t.clearSession() }
+
 // SetWebCookie installs a web session cookie (e.g. imported from a browser
 // copy of the JavDB session) so login-walled web pages (/tags) become
 // accessible; the site's login form is captcha-protected, so no password

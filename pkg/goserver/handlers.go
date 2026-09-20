@@ -46,12 +46,27 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cookie, token := s.javdb.Session()
-	// 持久化会话，后端重启后无需重新登录（配置显式传凭据时以配置为准）。
-	saveSession(cookie, token)
+	// 持久化会话与凭据：重启不丢登录，JWT 失效时自动重登。
+	saveSession(cookie, token, req.Username, req.Password)
+	s.mu.Lock()
+	s.username, s.password = req.Username, req.Password
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{
 		"token":    token,
 		"username": req.Username,
 	})
+}
+
+// handleLogout forgets the JavDB session locally (backend + session.json).
+// Note: JavDB has no app-API logout endpoint, so the server-side session is
+// simply dropped.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.javdb.ClearSession()
+	clearSession()
+	s.mu.Lock()
+	s.username, s.password = "", ""
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]string{"ok": "1"})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +167,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 // sort 参数：优先透传上游 sort_by（app API 服务端排序，实测支持
 // release±/score/hit，无评论/最低分取值）；上游已排序的方式跳过客户端
 // 重排（列表行无评分数据，客户端重排只会打乱上游结果）；其余方式
-//（most_magnets 行内有数据）继续客户端排序。
+// （most_magnets 行内有数据）继续客户端排序。
 func (s *Server) handleActorMovies(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 || parts[3] == "" {
@@ -913,7 +928,10 @@ func (s *Server) handleWebCookie(w http.ResponseWriter, r *http.Request) {
 	}
 	s.javdb.SetWebCookie(req.Cookie)
 	cookie, token := s.javdb.Session()
-	saveSession(cookie, token)
+	s.mu.Lock()
+	// 保留已保存的账号密码（若有），只更新 cookie/token。
+	saveSession(cookie, token, s.username, s.password)
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

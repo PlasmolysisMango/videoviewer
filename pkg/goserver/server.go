@@ -18,6 +18,7 @@ import (
 	"videoviewer/pkg/av"
 	"videoviewer/pkg/av/browser"
 	"videoviewer/pkg/javdb"
+	"videoviewer/pkg/subs"
 )
 
 // Config holds the server configuration.
@@ -48,7 +49,13 @@ func DefaultConfig() Config {
 type Server struct {
 	javdb *javdb.Client
 	av    *av.Client
-	cfg   Config
+	// subs is created lazily on first subtitle request (see subtitlesClient).
+	subs *subs.Client
+	cfg  Config
+
+	// username/password 是保存的 JavDB 凭据（来自登录或 session.json），
+	// JWT 失效时用于自动重登；与 auth 中间件无关，永不返回给前端。
+	username, password string
 
 	// imgClient 转发 Web 前端的图片请求（绕过第三方 CDN 的 CORS 限制）。
 	imgClient  *http.Client
@@ -70,9 +77,12 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Cookie != "" {
 		opts = append(opts, javdb.WithCookie(cfg.Cookie))
 	}
-	// 配置未显式给凭据时，恢复上次会话的登录态（重启不丢登录）。
+	// 配置未显式给凭据时，恢复上次会话的登录态（重启不丢登录），
+	// 并带上保存的用户名/密码供 JWT 失效时自动重登。
+	var savedUser, savedPass string
 	if cfg.Cookie == "" && cfg.Token == "" {
-		if cookie, appToken := loadSession(); cookie != "" || appToken != "" {
+		cookie, appToken, username, password := loadSession()
+		if cookie != "" || appToken != "" || username != "" {
 			log.Printf("goserver: restoring persisted JavDB session")
 			if cookie != "" {
 				opts = append(opts, javdb.WithCookie(cookie))
@@ -80,6 +90,7 @@ func New(cfg Config) (*Server, error) {
 			if appToken != "" {
 				opts = append(opts, javdb.WithAppToken(appToken))
 			}
+			savedUser, savedPass = username, password
 		}
 	}
 	if cfg.Proxy != "" {
@@ -125,6 +136,8 @@ func New(cfg Config) (*Server, error) {
 		av:        avClient,
 		cfg:       cfg,
 		imgClient: imgClient,
+		username:  savedUser,
+		password:  savedPass,
 	}, nil
 }
 
@@ -142,6 +155,16 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/logout", s.handleLogout)
+	// 用户态（标记/清单）——与 JavDB 登录账号双向同步
+	mux.HandleFunc("GET /api/user/marks", s.handleUserMarksGet)
+	mux.HandleFunc("POST /api/user/marks", s.handleUserMarkSet)
+	mux.HandleFunc("DELETE /api/user/marks", s.handleUserMarkClear)
+	mux.HandleFunc("GET /api/user/lists", s.handleUserListsGet)
+	mux.HandleFunc("POST /api/user/lists", s.handleUserListCreate)
+	mux.HandleFunc("DELETE /api/user/lists/{id}", s.handleUserListDelete)
+	mux.HandleFunc("POST /api/user/lists/{id}/rename", s.handleUserListRename)
+	mux.HandleFunc("POST /api/user/lists/{id}/remove-movie", s.handleUserListRemoveMovie)
 	// JavDB endpoints - no auth required for browsing
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/movie/", s.handleMovie)
@@ -169,6 +192,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/av/play/", s.handleAVPlay)
 	mux.HandleFunc("POST /api/av/download/", s.handleAVDownload)
 	mux.HandleFunc("POST /api/av/cf-cookie", s.handleAVCFCookie)
+	// Subtitle endpoints (pkg/subs: subtitlecat / avsubtitles / scanlover)
+	mux.HandleFunc("GET /api/subtitles/search", s.handleSubtitlesSearch)
+	mux.HandleFunc("GET /api/subtitles/auto", s.handleSubtitlesAuto)
+	mux.HandleFunc("GET /api/subtitles/download", s.handleSubtitlesDownload)
 	// Image proxy for Flutter Web (third-party CDNs send no CORS headers)
 	mux.HandleFunc("GET /api/img", s.handleImage)
 	// HLS relay: rewrite playlist & stream segments so browsers (no Referer control)

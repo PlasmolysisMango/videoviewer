@@ -97,6 +97,13 @@ func (t *transport) session() (cookie, appToken string) {
 	return t.cookie, t.appToken
 }
 
+// clearSession forgets all auth material (logout).
+func (t *transport) clearSession() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cookie, t.appToken = "", ""
+}
+
 // Site is a configured web mirror, defaulting to the first entry.
 func (t *transport) Site() string {
 	if len(t.opts.Sites) > 0 {
