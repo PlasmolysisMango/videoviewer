@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/client.dart';
 import 'data_cache.dart';
+import 'logger.dart';
 
 /// 一条字幕（SRT cue）。
 class SubCue {
@@ -138,8 +139,10 @@ class SubtitleService extends ChangeNotifier {
 
   // —— 字幕加载 ——
 
-  /// 会话内结果缓存（含"确认无字幕"的 null，避免反复请求）。
+  /// 会话内结果缓存 + 失败记录时间：失败结果 10 分钟内不重试，
+  /// 过后自动解禁——避免偶发网络失败锁死整个会话。
   final Map<String, LoadedSubtitle?> _mem = {};
+  final Map<String, DateTime> _negAt = {};
   final Map<String, Future<LoadedSubtitle?>> _inflight = {};
 
   /// 预加载 / 获取字幕；确认无字幕或失败时返回 null（字幕是可选增强）。
@@ -151,7 +154,17 @@ class SubtitleService extends ChangeNotifier {
 
   Future<LoadedSubtitle?> _loadUncached(String code) async {
     final hit = _mem[code];
-    if (_mem.containsKey(code)) return hit;
+    if (_mem.containsKey(code)) {
+      if (hit != null) return hit;
+      final at = _negAt[code];
+      if (at != null &&
+          DateTime.now().difference(at) < const Duration(minutes: 10)) {
+        return null;
+      }
+      // 负缓存过期：重新尝试。
+      _mem.remove(code);
+      _negAt.remove(code);
+    }
 
     // 持久缓存（7 天）：重进页面零请求。
     try {
@@ -172,11 +185,13 @@ class SubtitleService extends ChangeNotifier {
       final srt = r['srt'] ?? '';
       if (srt.isEmpty) {
         _mem[code] = null;
+        _negAt[code] = DateTime.now();
         return null;
       }
       final cues = parseSrt(srt);
       if (cues.isEmpty) {
         _mem[code] = null;
+        _negAt[code] = DateTime.now();
         return null;
       }
       final ls = LoadedSubtitle(
@@ -196,8 +211,44 @@ class SubtitleService extends ChangeNotifier {
       notifyListeners();
       return ls;
     } catch (_) {
-      // 会话内负缓存：本页不反复打网络。
+      // 会话内负缓存（带 TTL）：本页不反复打网络，10 分钟后允许重试。
       _mem[code] = null;
+      _negAt[code] = DateTime.now();
+      return null;
+    }
+  }
+
+  /// 手动选择条目：下载→解析→写缓存，与 auto 结果同一存储路径，
+  /// 播放器/详情页通过监听器实时收到新字幕。
+  Future<LoadedSubtitle?> applyManual(
+      String code, String source, String ref, String lang) async {
+    if (_client == null || code.isEmpty) return null;
+    try {
+      final r = await _client!.downloadSubtitle(
+          code: code, source: source, ref: ref, lang: lang);
+      final srt = r['srt'] ?? '';
+      if (srt.isEmpty) return null;
+      final cues = parseSrt(srt);
+      if (cues.isEmpty) return null;
+      final ls = LoadedSubtitle(
+        code: code,
+        source: source,
+        lang: r['lang'] ?? lang,
+        name: r['name'] ?? '',
+        cues: cues,
+      );
+      _mem[code] = ls;
+      _negAt.remove(code);
+      unawaited(DataCache.instance.write('subs.auto.$code', {
+        'source': ls.source,
+        'lang': ls.lang,
+        'name': ls.name,
+        'srt': srt,
+      }));
+      notifyListeners();
+      return ls;
+    } catch (e) {
+      AppLogger.warning('Manual subtitle apply failed: $e');
       return null;
     }
   }

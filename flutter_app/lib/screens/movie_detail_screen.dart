@@ -15,6 +15,7 @@ import '../services/image_url.dart';
 import '../services/logger.dart';
 import '../services/subtitle_service.dart';
 import '../widgets/common_ui.dart';
+import '../widgets/subtitle_picker.dart';
 import 'hls_player.dart';
 import 'search_screen.dart';
 import 'video_player_screen.dart';
@@ -71,8 +72,10 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   bool _isLoading = true;
   String? _error;
   int _galleryPage = 0;
-  // 字幕预加载：进入详情即后台拉取，就绪后在下方显示简洁提示。
+  // 字幕预加载：进入详情即后台拉取，就绪后显示简洁提示。
   LoadedSubtitle? _subtitle;
+  // 字幕搜索是否已完成（区分"加载中不显示"与"无结果提示"）。
+  bool _subtitleChecked = false;
 
   @override
   void initState() {
@@ -93,13 +96,14 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     _preloadSubtitle();
   }
 
-  /// 预加载字幕：详情页阶段提前拉取并缓存，就绪后显示「中文字幕已加载」
-  /// 式简洁提示；失败/加载中不占位，播放器直接复用同一份缓存。
+  /// 预加载字幕：详情页阶段提前拉取并缓存，就绪后显示「中文字幕已加载」，
+  /// 无结果/失败显示灰色提示（可点进手动选择），播放器直接复用同一份缓存。
   void _preloadSubtitle([String? number]) {
     final code = (number ?? widget.movieNumber).trim();
-    if (code.isEmpty || _subtitle != null) return;
+    if (code.isEmpty || _subtitleChecked) return;
+    _subtitleChecked = true;
     SubtitleService.instance.load(code).then((ls) {
-      if (mounted && ls != null) setState(() => _subtitle = ls);
+      if (mounted) setState(() => _subtitle = ls);
     });
   }
 
@@ -1012,21 +1016,45 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          // 字幕就绪提示：仅成功态显示（如“中文字幕已加载”），简洁不啰嗦
-          if (_subtitle != null)
+          // 字幕状态提示：成功绿色（如"中文字幕已加载"）；
+          // 无结果/失败灰色且可点击，进手动选择面板兼作兑底。
+          if (_subtitleChecked)
             Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: Row(
-                children: [
-                  const Icon(Icons.closed_caption,
-                      size: 15, color: Colors.green),
-                  const SizedBox(width: 5),
-                  Text(
-                    '${_subtitle!.langLabel}字幕已加载',
-                    style: const TextStyle(
-                        fontSize: 12, color: Colors.green),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: _subtitle != null
+                    ? null
+                    : () => showSubtitlePicker(context, widget.movieNumber),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _subtitle != null
+                            ? Icons.closed_caption
+                            : Icons.closed_caption_off,
+                        size: 15,
+                        color: _subtitle != null
+                            ? Colors.green
+                            : Theme.of(context).hintColor,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        _subtitle != null
+                            ? '${_subtitle!.langLabel}字幕已加载'
+                            : '未找到字幕，点此手动搜索',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: _subtitle != null
+                                ? Colors.green
+                                : Theme.of(context).hintColor),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           // 播放/下载按钮独占一行等宽展示；AV 流在后台解析，点击播放时如未就绪会现场补拉

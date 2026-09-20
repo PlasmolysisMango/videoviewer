@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -152,6 +153,32 @@ func (s *subtitlecatSource) Search(ctx context.Context, code string) ([]Item, er
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("%w on subtitlecat: %s", ErrNotFound, code)
 	}
+
+	// 精确番号命中优先：subtitlecat 搜索是模糊匹配（ABW-244 会混入
+	// ABW-242、[ABW] 动漫等无关条目）。标题去空白后以番号开头的排最前，
+	// 其余含番号的次之，无关的按下载量兜底，避免前 N 个详情页全被无关行占用。
+	codeKey := strings.ToLower(code)
+	flat := func(t string) string {
+		return strings.ToLower(strings.Join(strings.Fields(t), ""))
+	}
+	score := func(title string) int {
+		t := flat(title)
+		switch {
+		case strings.HasPrefix(t, codeKey):
+			return 0
+		case strings.Contains(t, codeKey):
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		si, sj := score(rows[i].title), score(rows[j].title)
+		if si != sj {
+			return si < sj
+		}
+		return rows[i].downloads > rows[j].downloads
+	})
 
 	// Each row is a hub of per-language .srt files (original + machine
 	// translations). Open the first few to discover the actual languages so
