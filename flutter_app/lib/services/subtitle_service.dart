@@ -139,8 +139,8 @@ class SubtitleService extends ChangeNotifier {
 
   // —— 字幕加载 ——
 
-  /// 会话内结果缓存 + 失败记录时间：失败结果 10 分钟内不重试，
-  /// 过后自动解禁——避免偶发网络失败锁死整个会话。
+  /// 会话内结果缓存 + 失败记录时间：失败结果 2 分钟内不重试，
+  /// 过后自动解禁——避免偶发失败（如后端被系统冻结瞬间）锁死整个会话。
   final Map<String, LoadedSubtitle?> _mem = {};
   final Map<String, DateTime> _negAt = {};
   final Map<String, Future<LoadedSubtitle?>> _inflight = {};
@@ -149,7 +149,10 @@ class SubtitleService extends ChangeNotifier {
   Future<LoadedSubtitle?> load(String code) {
     code = code.trim();
     if (code.isEmpty || _client == null) return Future.value(null);
-    return _inflight.putIfAbsent(code, () => _loadUncached(code));
+    final f = _inflight.putIfAbsent(code, () => _loadUncached(code));
+    // 完成后必须清理：否则 putIfAbsent 永远返回旧结果，
+    // 负缓存过期后的重试机制被完全架空（整会话锁死“未找到”）。
+    return f.whenComplete(() => _inflight.remove(code));
   }
 
   Future<LoadedSubtitle?> _loadUncached(String code) async {
@@ -158,7 +161,7 @@ class SubtitleService extends ChangeNotifier {
       if (hit != null) return hit;
       final at = _negAt[code];
       if (at != null &&
-          DateTime.now().difference(at) < const Duration(minutes: 10)) {
+          DateTime.now().difference(at) < const Duration(minutes: 2)) {
         return null;
       }
       // 负缓存过期：重新尝试。
