@@ -72,8 +72,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   bool _subtitlePanelOpen = false; // 字幕设置右侧侧边栏（画面仍可见可对照调整）
 
   // tick 节流：ExoPlayer/mpv 的事件频率远高于进度条需要，全页 setState
-  // 过频会加重渲染压力（配合引擎层 view 实例缓存，共同消除播放中闪黑）。
+  // 过频会加重渲染压力；配合周期自愈重建画面层，消除播放中黑屏/闪黑。
   DateTime _lastTickAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // 上次周期自愈重建画面层的时间（见 _onPlayerTick）。
+  DateTime _lastSelfHealAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   // 字幕：详情页/播放器都会触发加载（服务内去重），就绪后 overlay 渲染。
   LoadedSubtitle? _subtitle;
@@ -201,6 +204,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       return;
     }
     _lastTickAt = now;
+    // 周期性自愈：每 ~1.5s 换 Key 重建画面层，兼底部分设备上
+    // TextureLayer 长期复用后停止合成新帧（黑屏有声音）的引擎问题。
+    if (_lastTickAt.difference(_lastSelfHealAt) >=
+        const Duration(milliseconds: 1500)) {
+      _lastSelfHealAt = _lastTickAt;
+      _nudgeView();
+      return;
+    }
     setState(() {
       _position = e.position;
       _duration = e.duration;

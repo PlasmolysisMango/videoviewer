@@ -65,11 +65,6 @@ class VideoPlayerEngine implements PlayerEngine {
 
   final VideoPlayerController _c;
 
-  /// 画面 widget 实例：首次创建后长期复用。全屏切换期间由播放页
-  /// 保证父链同构（同一 slot），实例被直接复用；重建实例反而
-  /// 会造成 unmount/remount 竞态，是 Android Texture 黑帧的来源。
-  Widget? _view;
-
   @override
   void Function()? onTick;
 
@@ -110,8 +105,10 @@ class VideoPlayerEngine implements PlayerEngine {
 
   @override
   Widget buildView() {
-    // 惰性首次创建，之后永远复用同一实例。
-    return _view ??= VideoPlayer(_c);
+    // 每次返回新 widget 实例：重建成本可忽略（key 稳定时 Element 复用，
+    // 零 remount），但保持画面层可被外部重建驱动（配合播放页的
+    // KeyedSubtree epoch 机制，seek/周期自愈时换 Key 强制取新帧）。
+    return VideoPlayer(_c);
   }
 
   @override
@@ -152,9 +149,6 @@ class MediaKitEngine implements PlayerEngine {
 
   final Player _player;
   late final VideoController _controller;
-
-  /// 画面 widget 实例：同 VideoPlayerEngine，长期复用。
-  Widget? _view;
 
   List<StreamSubscription<dynamic>> _subs = const [];
   Duration _position = Duration.zero;
@@ -212,8 +206,8 @@ class MediaKitEngine implements PlayerEngine {
 
   @override
   Widget buildView() {
-    // 惰性首次创建，之后永远复用同一实例。
-    return _view ??= Video(
+    // 同 VideoPlayerEngine：每次新建实例，配合播放页 epoch 机制。
+    return Video(
       controller: _controller,
       controls: NoVideoControls,
       fit: BoxFit.contain,
