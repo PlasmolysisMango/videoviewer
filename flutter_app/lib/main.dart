@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -51,11 +52,15 @@ void main() async {
 
 /// 监听应用生命周期：detached（窗口关闭/进程退出）时停止后端。
 /// 服务端另有 -parent 看门狗兜底：主进程无论怎样退出，server 都会自杀。
+/// Android 例外：detached 可能由系统在后台回收 Activity 触发而进程仍存活，
+/// 内嵌后端归前台服务（GoServerService）管，这里主动停会误杀后端。
 class _BackendShutdownObserver extends WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.detached) {
-      BackendLauncher.stop();
+      if (!kIsWeb && !Platform.isAndroid) {
+        BackendLauncher.stop();
+      }
     }
   }
 }

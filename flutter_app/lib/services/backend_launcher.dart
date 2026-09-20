@@ -42,8 +42,14 @@ class BackendLauncher {
     String downloadDir = '',
   }) async {
     if (_isInitialized) {
-      debugPrint('BackendLauncher: already initialized');
-      return;
+      // 已初始化不代表后端还活着：Android 上进程可能被系统冻结/查杀后部分恢复，
+      // 先做一次健康探测，失败则继续走重启流程。
+      if (await _healthy()) {
+        debugPrint('BackendLauncher: already initialized (health check passed)');
+        return;
+      }
+      debugPrint('BackendLauncher: marked initialized but backend is dead, restarting');
+      _isInitialized = false;
     }
 
     // Web platform: backend must be running separately
@@ -253,5 +259,68 @@ class BackendLauncher {
       'Server startup timeout after ${timeoutMs}ms',
       Duration(milliseconds: timeoutMs),
     );
+  }
+
+  /// Lightweight liveness probe against the embedded backend.
+  static Future<bool> _healthy() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$_baseUrl/health'))
+          .timeout(const Duration(milliseconds: 1500));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Ensures the embedded backend is reachable, restarting it if needed.
+  ///
+  /// Called by the healing HTTP client when a request dies with a connection
+  /// error (the backend process may have been reclaimed by the OS while the
+  /// app was in the background). Web has no embedded backend to heal.
+  static Future<void> ensureRunning() async {
+    if (kIsWeb) {
+      return;
+    }
+    if (await _healthy()) {
+      return;
+    }
+    debugPrint('BackendLauncher: backend unreachable, restarting...');
+    _isInitialized = false;
+    await launch();
+  }
+}
+
+/// Creates an HTTP client that transparently recovers the embedded backend
+/// and retries once when a request fails at the connection level.
+http.Client createHealingClient() => _HealingClient();
+
+class _HealingClient extends http.BaseClient {
+  final http.Client _inner = http.Client();
+  bool _healing = false;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    try {
+      return await _inner.send(request);
+    } catch (e) {
+      // Only connection-level failures (refused/reset/closed) indicate the
+      // local backend is gone; HTTP error responses are returned as-is.
+      if (kIsWeb || _healing || !_isConnectionError(e)) {
+        rethrow;
+      }
+      debugPrint('HealingClient: local backend unreachable ($e), recovering...');
+      _healing = true;
+      try {
+        await BackendLauncher.ensureRunning();
+        return await _inner.send(request);
+      } finally {
+        _healing = false;
+      }
+    }
+  }
+
+  static bool _isConnectionError(Object e) {
+    return e is SocketException || e is http.ClientException;
   }
 }

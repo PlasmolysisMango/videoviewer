@@ -1,9 +1,15 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import '../services/backend_launcher.dart';
+
 class JavDBClient {
   final String baseUrl;
   String? _token;
+
+  // 自愈 HTTP client：本机内嵌后端被系统冻结/回收导致连接级失败时，
+  // 先拉起后端再重试一次（仅非 Web 平台生效）。
+  final http.Client _http = createHealingClient();
 
   JavDBClient(this.baseUrl);
 
@@ -19,7 +25,7 @@ class JavDBClient {
       };
 
   Future<Map<String, dynamic>> login(String username, String password) async {
-    final response = await http.post(
+    final response = await _http.post(
       Uri.parse('$baseUrl/api/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'username': username, 'password': password}),
@@ -49,7 +55,7 @@ class JavDBClient {
       params['sort'] = sort;
     }
     final uri = Uri.parse('$baseUrl/api/search').replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -64,7 +70,7 @@ class JavDBClient {
   Future<Map<String, dynamic>> getMovie(String id, {bool cast = false}) async {
     final uri = Uri.parse('$baseUrl/api/movie/$id').replace(
         queryParameters: cast ? {'cast': '1'} : null);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -78,7 +84,7 @@ class JavDBClient {
   /// 三维度并行聚合打分；未导入网页版 Cookie 时题材维度静默跳过。
   /// 返回 {"similar": [{"movie": {...}, "reason": "..."}]}。
   Future<Map<String, dynamic>> getSimilarMovies(String movieId) async {
-    final response = await http.get(
+    final response = await _http.get(
       Uri.parse('$baseUrl/api/similar/$movieId'),
       headers: _headers,
     );
@@ -95,7 +101,7 @@ class JavDBClient {
   /// 走 app API（公开可用），返回 {"reviews": [...], "current_page": n, "total": n}。
   Future<Map<String, dynamic>> getReviews(String movieId,
       {int page = 1, String sort = 'hotly'}) async {
-    final response = await http.get(
+    final response = await _http.get(
       Uri.parse('$baseUrl/api/reviews/$movieId?page=$page&sort=$sort'),
       headers: _headers,
     );
@@ -134,7 +140,7 @@ class JavDBClient {
 
     final uri = Uri.parse('$baseUrl/api/ranking/$kind')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -151,7 +157,7 @@ class JavDBClient {
       'q': query,
       'page': page.toString(),
     });
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
@@ -178,7 +184,7 @@ class JavDBClient {
     }
     final uri = Uri.parse('$baseUrl/api/lists/$listId')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -190,7 +196,7 @@ class JavDBClient {
 
   /// 获取已订阅条目（合集/题材/演员混合，按 kind 字段区分）：/api/subscriptions
   Future<List<Map<String, dynamic>>> getSubscriptions() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/subscriptions'),
+    final response = await _http.get(Uri.parse('$baseUrl/api/subscriptions'),
         headers: _headers);
 
     if (response.statusCode == 200) {
@@ -208,7 +214,7 @@ class JavDBClient {
   /// 新增订阅：kind 为 collection / genre / actor；重复订阅时刷新元数据。
   Future<void> subscribe(String kind, String id, String name,
       {int moviesCount = 0, String? avatar, String? group}) async {
-    final response = await http.post(
+    final response = await _http.post(
       Uri.parse('$baseUrl/api/subscriptions'),
       headers: _headers,
       body: jsonEncode({
@@ -230,7 +236,7 @@ class JavDBClient {
   Future<void> unsubscribe(String kind, String id) async {
     final uri = Uri.parse('$baseUrl/api/subscriptions/$id')
         .replace(queryParameters: {'kind': kind});
-    final response = await http.delete(uri, headers: _headers);
+    final response = await _http.delete(uri, headers: _headers);
     if (response.statusCode != 200) {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'Unsubscribe failed');
@@ -238,7 +244,7 @@ class JavDBClient {
   }
 
   Future<Map<String, dynamic>> getMagnets(String movieId) async {
-    final response = await http.get(
+    final response = await _http.get(
       Uri.parse('$baseUrl/api/magnets/$movieId'),
       headers: _headers,
     );
@@ -258,7 +264,7 @@ class JavDBClient {
     }
 
     final uri = Uri.parse('$baseUrl/api/tags').replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -283,7 +289,7 @@ class JavDBClient {
       params['sort'] = sort;
     }
     final uri = Uri.parse('$baseUrl/api/genre').replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -295,7 +301,7 @@ class JavDBClient {
 
   /// 导入网页版登录 Cookie（解锁题材浏览等登录墙页面）。
   Future<void> setWebCookie(String cookie) async {
-    final response = await http.post(
+    final response = await _http.post(
       Uri.parse('$baseUrl/api/web-cookie'),
       headers: _headers,
       body: jsonEncode({'cookie': cookie}),
@@ -307,7 +313,7 @@ class JavDBClient {
   }
 
   Future<Map<String, dynamic>> getActor(String id) async {
-    final response = await http.get(
+    final response = await _http.get(
       Uri.parse('$baseUrl/api/actor/$id'),
       headers: _headers,
     );
@@ -340,7 +346,7 @@ class JavDBClient {
     }
     final uri = Uri.parse('$baseUrl/api/actor-movies/$actorId')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -358,7 +364,7 @@ class JavDBClient {
     final cached = _cachedSources;
     if (cached != null) return cached;
     final uri = Uri.parse('$baseUrl/api/av/sources');
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
@@ -384,7 +390,7 @@ class JavDBClient {
 
     final uri = Uri.parse('$baseUrl/api/av/search')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -402,7 +408,7 @@ class JavDBClient {
 
     final uri = Uri.parse('$baseUrl/api/av/detail/$code')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -423,7 +429,7 @@ class JavDBClient {
 
     final uri = Uri.parse('$baseUrl/api/av/resolve/$code')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -443,7 +449,7 @@ class JavDBClient {
 
     final uri = Uri.parse('$baseUrl/api/av/probe/$code')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -456,7 +462,7 @@ class JavDBClient {
   /// 注入 Cloudflare cf_clearance Cookie，后续请求自动携带。
   Future<void> avSetCFCookie(String host, String cookie, {String? ua}) async {
     final uri = Uri.parse('$baseUrl/api/av/cf-cookie');
-    final response = await http.post(uri, headers: _headers, body: jsonEncode({
+    final response = await _http.post(uri, headers: _headers, body: jsonEncode({
       'host': host,
       'cookie': cookie,
       if (ua != null) 'ua': ua,
@@ -476,7 +482,7 @@ class JavDBClient {
 
     final uri = Uri.parse('$baseUrl/api/av/play/$code')
         .replace(queryParameters: params);
-    final response = await http.get(uri, headers: _headers);
+    final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
@@ -498,7 +504,7 @@ class JavDBClient {
 
     final uri = Uri.parse('$baseUrl/api/av/download/$code')
         .replace(queryParameters: params);
-    final response = await http.post(uri, headers: _headers);
+    final response = await _http.post(uri, headers: _headers);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
