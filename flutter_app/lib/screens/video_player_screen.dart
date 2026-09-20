@@ -78,6 +78,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   // 字幕：详情页/播放器都会触发加载（服务内去重），就绪后 overlay 渲染。
   LoadedSubtitle? _subtitle;
 
+  // 字幕渲染状态走 ValueNotifier 隔离：cue 与字号/颜色打包成 record
+  // （结构相等性，值不变不通知），tick/设置变化只刷新 overlay 子树，
+  // 不再全页 setState 扰动画面层。
+  final ValueNotifier<({SubCue? cue, int color, double size})> _subtitleRender =
+      ValueNotifier(const (cue: null, color: 0xFFFFFFFF, size: 20));
+
   // 画面实例代际：seek/切全屏后自增，重建 TextureLayer 强制重新取帧。
   // ExoPlayer seek 后视频轨重新输出，但长期复用的 TextureLayer 在
   // 部分设备上不重新合成（黑帧滞留、声音正常）；换 Key 重挂子树
@@ -120,8 +126,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     if (!mounted || widget.movieNumber.isEmpty) return;
     // load() 命中会话缓存时同步返回；设置变化时也借此触发重建。
     SubtitleService.instance.load(widget.movieNumber).then((ls) {
-      if (mounted) setState(() => _subtitle = ls);
+      if (!mounted) return;
+      final changed = !identical(_subtitle, ls);
+      // 开关字幕不影响 _subtitle 实例，但控制栏图标需要跟着变。
+      final wasActive =
+          _subtitle != null && SubtitleService.instance.enabled;
+      _subtitle = ls;
+      final isActive = _subtitle != null && SubtitleService.instance.enabled;
+      _updateSubtitleRender(_controller?.position ?? _position);
+      // 字幕源/开关变化才刷新控制栏图标与侧边栏标签；cue 与字号等
+      // 细粒度更新走 _subtitleRender notifier，不全页 setState。
+      if (changed || wasActive != isActive) setState(() {});
     });
+  }
+
+  /// 按当前进度重算字幕渲染状态并写入 notifier；record 的结构相等性
+  /// 保证 cue 与字号/颜色都未变化时零通知。
+  void _updateSubtitleRender(Duration position) {
+    final ls = _subtitle;
+    final svc = SubtitleService.instance;
+    SubCue? cue;
+    if (ls != null && svc.enabled) {
+      // 偏移语义：正值 = 字幕延后显示，故查找时把进度往回拨。
+      cue = SubtitleService.cueAt(
+          ls.cues, position - Duration(milliseconds: svc.offsetMs));
+    }
+    _subtitleRender.value =
+        (cue: cue, color: svc.fontColor, size: svc.fontSize);
   }
 
   /// 默认清晰度选择：设置"不限"时返回 0（保持排序默认——变体优先、
@@ -201,6 +232,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       return;
     }
     _lastTickAt = now;
+    // 字幕渲染状态走 notifier 增量更新，不进 setState。
+    _updateSubtitleRender(e.position);
     // 稳态播放不再主动重建画面层：新版 video_player_android（SurfaceProducer
     // 纹理管线）下，稳态期反复卸载/重挂 Texture 会让新纹理与 surface 重新
     // 握手，某次握手后拿不到后续帧即永久黑屏（音频照常）。纹理重建只保留
@@ -242,6 +275,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _controller?.onTick = null;
     _controller?.dispose();
+    _subtitleRender.dispose();
     SubtitleService.instance.removeListener(_onSubtitleChanged);
     super.dispose();
   }
@@ -301,6 +335,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     final c = _controller;
     if (c == null) return;
     await c.seek(d);
+    // 字幕 cue 立即对齐跳转后的位置，不等下一个 tick。
+    _updateSubtitleRender(d);
     // 点击进度条跳转后立即重建画面层（见 _viewEpoch 注释）。
     _nudgeView();
   }
@@ -339,43 +375,46 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     );
   }
 
-  /// 字幕 overlay：白字黑边 + 半透明底，随播放进度/偏移/字号实时变化。
-  /// 放在亮度遮罩与手势层之下，IgnorePointer 不拦截任何手势。
+  /// 字幕 overlay：白字黑边 + 半透明底。Positioned 恒定在 Stack 直接
+  /// 层（ParentData 要求 Positioned 必须是 Stack 直接子节点），内容由
+  /// ValueListenableBuilder 隔离重建，无字幕时内容为空——widget 类型
+  /// 不切换，Stack 子节点结构稳定。
   Widget _buildSubtitleOverlay() {
-    final ls = _subtitle;
-    final svc = SubtitleService.instance;
-    if (ls == null || !svc.enabled) return const SizedBox.shrink();
-    // 偏移语义：正值 = 字幕延后显示，故查找时把进度往回拨。
-    final pos = _position - Duration(milliseconds: svc.offsetMs);
-    final cue = SubtitleService.cueAt(ls.cues, pos);
-    if (cue == null) return const SizedBox.shrink();
     return Positioned(
       left: 24,
       right: 24,
       bottom: _isFullscreen ? 76 : 10,
-      child: IgnorePointer(
-        child: Center(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.45),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              cue.text,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Color(svc.fontColor),
-                fontSize: svc.fontSize,
-                height: 1.35,
-                shadows: const [
-                  Shadow(offset: Offset(1, 1), blurRadius: 2),
-                  Shadow(offset: Offset(-1, 1), blurRadius: 2),
-                ],
+      child: ValueListenableBuilder<({SubCue? cue, int color, double size})>(
+        valueListenable: _subtitleRender,
+        builder: (context, r, _) {
+          final cue = r.cue;
+          if (cue == null) return const SizedBox.shrink();
+          return IgnorePointer(
+            child: Center(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  cue.text,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(r.color),
+                    fontSize: r.size,
+                    height: 1.35,
+                    shadows: const [
+                      Shadow(offset: Offset(1, 1), blurRadius: 2),
+                      Shadow(offset: Offset(-1, 1), blurRadius: 2),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }
@@ -469,7 +508,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                   isFullscreen: _isFullscreen,
                   onToggleFullscreen: _toggleFullscreen,
                   onOpenSubtitleSettings: _toggleSubtitlePanel,
-                  subtitleOn: _subtitle != null && SubtitleService.instance.enabled,
+                  subtitleOn:
+                      _subtitle != null && SubtitleService.instance.enabled,
                 ),
               ),
             // 字幕设置侧边栏（关闭时滑出屏幕右侧）
@@ -563,35 +603,39 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       return const Positioned.fill(child: SizedBox.shrink());
     }
     return Positioned.fill(
-      child: LayoutBuilder(builder: (context, box) {
-        final maxW = box.maxWidth;
-        final maxH = box.maxHeight;
-        final ar = c.aspectRatio; // 宽/高，未知时引擎默认 16/9
-        double w, h;
-        if (!maxW.isFinite || !maxH.isFinite || ar <= 0) {
-          w = maxW.isFinite ? maxW : 16;
-          h = maxH.isFinite ? maxH : 9;
-        } else if (_isFullscreen) {
-          w = max(maxW, maxH * ar);
-          h = w / ar;
-        } else {
-          w = min(maxW, maxH * ar);
-          h = w / ar;
-        }
-        return ClipRect(
-          child: OverflowBox(
-            alignment: Alignment.center,
-            minWidth: w,
-            maxWidth: w,
-            minHeight: h,
-            maxHeight: h,
-            child: KeyedSubtree(
-              key: ValueKey('view$_viewEpoch'),
-              child: c.buildView(),
+      // 隔离画面层与 UI 层的重绘：字幕/控制栏刷新不再波及 Texture 区域，
+      // 画面帧更新只由 surface 通知与 _viewEpoch 确定性重建驱动。
+      child: RepaintBoundary(
+        child: LayoutBuilder(builder: (context, box) {
+          final maxW = box.maxWidth;
+          final maxH = box.maxHeight;
+          final ar = c.aspectRatio; // 宽/高，未知时引擎默认 16/9
+          double w, h;
+          if (!maxW.isFinite || !maxH.isFinite || ar <= 0) {
+            w = maxW.isFinite ? maxW : 16;
+            h = maxH.isFinite ? maxH : 9;
+          } else if (_isFullscreen) {
+            w = max(maxW, maxH * ar);
+            h = w / ar;
+          } else {
+            w = min(maxW, maxH * ar);
+            h = w / ar;
+          }
+          return ClipRect(
+            child: OverflowBox(
+              alignment: Alignment.center,
+              minWidth: w,
+              maxWidth: w,
+              minHeight: h,
+              maxHeight: h,
+              child: KeyedSubtree(
+                key: ValueKey('view$_viewEpoch'),
+                child: c.buildView(),
+              ),
             ),
-          ),
-        );
-      }),
+          );
+        }),
+      ),
     );
   }
 
