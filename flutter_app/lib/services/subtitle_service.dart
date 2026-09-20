@@ -74,6 +74,7 @@ class SubtitleService extends ChangeNotifier {
   static const _kEnabled = 'subs.enabled';
   static const _kFontSize = 'subs.font_size';
   static const _kOffsetMs = 'subs.offset_ms';
+  static const _kFontColor = 'subs.font_color';
 
   bool enabled = true;
 
@@ -83,12 +84,16 @@ class SubtitleService extends ChangeNotifier {
   /// 时间轴偏移（毫秒）。正值 = 字幕延后显示，负值 = 提前。
   int offsetMs = 0;
 
+  /// 字幕颜色（ARGB），默认白色。
+  int fontColor = 0xFFFFFFFF;
+
   Future<void> loadSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       enabled = prefs.getBool(_kEnabled) ?? true;
       fontSize = prefs.getDouble(_kFontSize) ?? 20;
       offsetMs = prefs.getInt(_kOffsetMs) ?? 0;
+      fontColor = prefs.getInt(_kFontColor) ?? 0xFFFFFFFF;
       notifyListeners();
     } catch (_) {}
   }
@@ -99,6 +104,7 @@ class SubtitleService extends ChangeNotifier {
       await prefs.setBool(_kEnabled, enabled);
       await prefs.setDouble(_kFontSize, fontSize);
       await prefs.setInt(_kOffsetMs, offsetMs);
+      await prefs.setInt(_kFontColor, fontColor);
     } catch (_) {}
   }
 
@@ -116,6 +122,12 @@ class SubtitleService extends ChangeNotifier {
 
   void setOffsetMs(int v) {
     offsetMs = v.clamp(-10000, 10000);
+    _persistSettings();
+    notifyListeners();
+  }
+
+  void setFontColor(int argb) {
+    fontColor = argb;
     _persistSettings();
     notifyListeners();
   }

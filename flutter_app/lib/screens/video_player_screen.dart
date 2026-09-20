@@ -11,7 +11,7 @@ import '../services/player_engine.dart';
 import '../services/subtitle_service.dart';
 import '../widgets/player_control_bar.dart';
 import '../widgets/player_gestures.dart';
-import 'subtitle_settings_screen.dart';
+import '../widgets/subtitle_panel.dart';
 
 /// 原生端 HLS 播放器（video_player / ExoPlayer 原生支持 HLS，可带 Referer 直连）。
 /// 支持清晰度切换（重初始化并保留进度）、倍速、手势（音量/亮度/进度）、横屏全屏。
@@ -53,6 +53,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   String? _error;
   bool _isFullscreen = false;
   bool _controlsVisible = true; // 单击视频区切换控制 UI（AppBar/控制栏）
+
+  // tick 节流：ExoPlayer/mpv 的事件频率远高于进度条需要，全页 setState
+  // 过频会加重渲染压力（配合引擎层 view 实例缓存，共同消除播放中闪黑）。
+  DateTime _lastTickAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   // 字幕：详情页/播放器都会触发加载（服务内去重），就绪后 overlay 渲染。
   LoadedSubtitle? _subtitle;
@@ -131,6 +135,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   void _onPlayerTick() {
     final e = _controller;
     if (e == null || !mounted) return;
+    // 节流到 ~10Hz：进度条足够平滑，避免高频全页重建。
+    final now = DateTime.now();
+    if (now.difference(_lastTickAt) < const Duration(milliseconds: 100)) {
+      return;
+    }
+    _lastTickAt = now;
     setState(() {
       _position = e.position;
       _duration = e.duration;
@@ -229,9 +239,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     _controller?.setVolume(v);
   }
 
+  /// 字幕设置：弹出播放页叠加面板（开关/字号/颜色/时间轴就地调整，实时生效）。
   void _openSubtitleSettings() {
-    Navigator.push(context,
-        MaterialPageRoute(builder: (context) => const SubtitleSettingsScreen()));
+    showSubtitlePanel(context);
   }
 
   /// 字幕 overlay：白字黑边 + 半透明底，随播放进度/偏移/字号实时变化。
@@ -260,7 +270,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               cue.text,
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Colors.white,
+                color: Color(svc.fontColor),
                 fontSize: svc.fontSize,
                 height: 1.35,
                 shadows: const [

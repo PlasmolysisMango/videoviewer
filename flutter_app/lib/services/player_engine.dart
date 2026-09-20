@@ -65,6 +65,10 @@ class VideoPlayerEngine implements PlayerEngine {
 
   final VideoPlayerController _c;
 
+  /// 缓存画面 widget 实例：重复 build 时复用同一实例，
+  /// 避免 Texture 层频繁重挂导致播放中黑屏闪烁。
+  late final Widget _view = VideoPlayer(_c);
+
   @override
   void Function()? onTick;
 
@@ -104,7 +108,7 @@ class VideoPlayerEngine implements PlayerEngine {
   Future<void> setRate(double r) => _c.setPlaybackSpeed(r);
 
   @override
-  Widget buildView() => VideoPlayer(_c);
+  Widget buildView() => _view;
 
   @override
   Future<void> dispose() {
@@ -144,6 +148,14 @@ class MediaKitEngine implements PlayerEngine {
 
   final Player _player;
   late final VideoController _controller;
+
+  /// 缓存画面 widget 实例：同 VideoPlayerEngine，防 Texture 重挂闪屏。
+  late final Widget _view = Video(
+    controller: _controller,
+    controls: NoVideoControls,
+    fit: BoxFit.contain,
+  );
+
   List<StreamSubscription<dynamic>> _subs = const [];
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
@@ -199,11 +211,7 @@ class MediaKitEngine implements PlayerEngine {
   Future<void> setRate(double r) => _player.setRate(r);
 
   @override
-  Widget buildView() => Video(
-        controller: _controller,
-        controls: NoVideoControls,
-        fit: BoxFit.contain,
-      );
+  Widget buildView() => _view;
 
   @override
   Future<void> dispose() async {

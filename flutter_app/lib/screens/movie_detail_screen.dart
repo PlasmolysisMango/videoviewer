@@ -71,9 +71,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   bool _isLoading = true;
   String? _error;
   int _galleryPage = 0;
-  // 字幕预加载：进入详情即后台拉取，播放时已就绪（服务内去重/缓存）。
+  // 字幕预加载：进入详情即后台拉取，就绪后在下方显示简洁提示。
   LoadedSubtitle? _subtitle;
-  bool _subtitleLoading = false;
 
   @override
   void initState() {
@@ -94,17 +93,13 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     _preloadSubtitle();
   }
 
-  /// 预加载字幕（详情页展示"已加载"提示，播放器直接复用同一份缓存）。
+  /// 预加载字幕：详情页阶段提前拉取并缓存，就绪后显示「中文字幕已加载」
+  /// 式简洁提示；失败/加载中不占位，播放器直接复用同一份缓存。
   void _preloadSubtitle([String? number]) {
     final code = (number ?? widget.movieNumber).trim();
     if (code.isEmpty || _subtitle != null) return;
-    setState(() => _subtitleLoading = true);
     SubtitleService.instance.load(code).then((ls) {
-      if (!mounted) return;
-      setState(() {
-        _subtitle = ls;
-        _subtitleLoading = false;
-      });
+      if (mounted && ls != null) setState(() => _subtitle = ls);
     });
   }
 
@@ -1017,28 +1012,19 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          // 字幕预加载状态提示：成功绿字、加载中灰字，失败不占位
-          if (_subtitle != null || _subtitleLoading)
+          // 字幕就绪提示：仅成功态显示（如“中文字幕已加载”），简洁不啰嗦
+          if (_subtitle != null)
             Padding(
               padding: const EdgeInsets.only(top: 2),
               child: Row(
                 children: [
-                  Icon(
-                    _subtitle != null
-                        ? Icons.closed_caption
-                        : Icons.hourglass_empty,
-                    size: 15,
-                    color: _subtitle != null ? Colors.green : Colors.grey,
-                  ),
+                  const Icon(Icons.closed_caption,
+                      size: 15, color: Colors.green),
                   const SizedBox(width: 5),
                   Text(
-                    _subtitle != null
-                        ? '字幕已加载 · ${_subtitle!.langLabel} · 播放时自动显示'
-                        : '字幕加载中…',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: _subtitle != null ? Colors.green : Colors.grey,
-                    ),
+                    '${_subtitle!.langLabel}字幕已加载',
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.green),
                   ),
                 ],
               ),

@@ -134,7 +134,7 @@ class PlayerControlBar extends StatelessWidget {
                   ),
                 ),
               ),
-            // 字幕设置入口
+            // 字幕入口：弹出播放页叠加设置面板（开关/字号/颜色/时间轴）
             if (onOpenSubtitleSettings != null)
               IconButton(
                 icon: Icon(
@@ -143,7 +143,7 @@ class PlayerControlBar extends StatelessWidget {
                       : Icons.closed_caption_off,
                   color: Colors.white,
                 ),
-                tooltip: '字幕设置',
+                tooltip: '字幕',
                 onPressed: onOpenSubtitleSettings,
               ),
             // 全屏按钮
