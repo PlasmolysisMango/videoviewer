@@ -69,9 +69,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _client = JavDBClient(BackendLauncher.baseUrl);
     _bannerController = PageController(viewportFraction: 0.88);
     _restoreCachedPool().then((hasCache) {
-      // 有缓存：立即展示旧数据，后台静默刷新（stale-while-revalidate）；
-      // 无缓存：走正常加载（全屏 loading）。
-      _loadHome(silent: hasCache);
+      // 有缓存：只展示缓存，进首页不重新推荐（下拉刷新才换一批）；
+      // 无缓存（首次/缓存过期）：走正常加载（全屏 loading）。
+      if (!hasCache) _loadHome();
     });
   }
 
@@ -111,12 +111,16 @@ class _HomeScreenState extends State<HomeScreen> {
     return false;
   }
 
-  Future<void> _loadHome({bool silent = false}) async {
-    if (!silent) {
+  /// [showLoading]：全屏 loading（进首页无缓存时）；下拉刷新传 false，
+  /// 保留当前内容后台替换，避免列表被 loading 圈打断。
+  Future<void> _loadHome({bool showLoading = true}) async {
+    if (showLoading) {
       setState(() {
         _loading = true;
         _error = null;
       });
+    } else {
+      setState(() => _error = null);
     }
     try {
       final recMovies = await _recommendFromPool();
@@ -131,8 +135,8 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        // 静默刷新失败且已有缓存内容时不打扰用户
-        if (!silent || _recMovies.isEmpty) {
+        // 已有展示内容（缓存/上次成功）时刷新失败不打扰用户
+        if (_recMovies.isEmpty) {
           _error = e.toString();
         }
         _loading = false;
@@ -142,9 +146,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 热门推荐池：TOP250 底池（总榜 + 2009-2026 随机 4 个年度切面）
-  /// 叠加全部订阅（合集/题材/演员）的影片，合并去重洗牌，每次进入
-  /// 首页/下拉刷新都不同。各源独立容错：单个失败只缩池；全空时
-  /// 回退热播榜，保证首页总有内容。
+  /// 叠加全部订阅（合集/题材/演员）的影片，合并去重洗牌，每次下拉
+  /// 刷新换一批（进首页只展示缓存，不重新拉）。各源独立容错：
+  /// 单个失败只缩池；全空时回退热播榜，保证首页总有内容。
   Future<List<Movie>> _recommendFromPool() async {
     final provider = context.read<SubscriptionProvider>();
     await provider.ensureLoaded();
@@ -431,7 +435,8 @@ class _HomeScreenState extends State<HomeScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: _loadHome,
+              // 下拉刷新才重新推荐（重新随机年份+拉池），保留内容原位替换
+              onRefresh: () => _loadHome(showLoading: false),
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.only(bottom: 32),
