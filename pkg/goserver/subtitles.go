@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"videoviewer/pkg/javdb"
 	"videoviewer/pkg/subs"
 )
 
@@ -69,6 +70,7 @@ func (s *Server) handleSubtitlesAuto(w http.ResponseWriter, r *http.Request) {
 				hdr := subtitleHeaders("auto", "", autoName)
 				if m, ok := readSubMeta(autoName); ok {
 					hdr = subtitleHeaders(m.Source, m.Lang, m.Name)
+					data = simplifySubtitle(m.Lang, data)
 				}
 				writeSRT(w, data, hdr)
 				return
@@ -102,6 +104,7 @@ func (s *Server) handleSubtitlesAuto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	d.Body = simplifySubtitle(d.Lang, d.Body)
 	cacheSubtitle(autoName, d.Body)
 	cacheSubMeta(autoName, subMeta{Source: best.Source, Lang: d.Lang, Name: d.Name})
 	writeSRT(w, d.Body, subtitleHeaders(best.Source, d.Lang, d.Name))
@@ -123,7 +126,7 @@ func (s *Server) handleSubtitlesDownload(w http.ResponseWriter, r *http.Request)
 
 	if path, ok := cachedSubtitleFile(code, source, lang); ok {
 		if data, err := os.ReadFile(path); err == nil {
-			writeSRT(w, data, subtitleHeaders(source, lang, filepath.Base(path)))
+			writeSRT(w, simplifySubtitle(lang, data), subtitleHeaders(source, lang, filepath.Base(path)))
 			return
 		}
 	}
@@ -136,8 +139,21 @@ func (s *Server) handleSubtitlesDownload(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	name := fmt.Sprintf("%s.%s.%s.srt", sanitizeFile(code), sanitizeFile(source), sanitizeFile(lang))
+	d.Body = simplifySubtitle(lang, d.Body)
 	cacheSubtitle(name, d.Body)
 	writeSRT(w, d.Body, subtitleHeaders(source, d.Lang, d.Name))
+}
+
+// simplifySubtitle converts Chinese subtitles (lang empty or zh*) to
+// simplified characters via the shared t2s mapping; conversion is idempotent
+// for already-simplified text and skipped for non-Chinese languages.
+// Applied before caching so disk replays serve simplified text directly.
+func simplifySubtitle(lang string, data []byte) []byte {
+	l := strings.ToLower(lang)
+	if l != "" && !strings.HasPrefix(l, "zh") {
+		return data
+	}
+	return []byte(javdb.ToSimplified(string(data)))
 }
 
 // langRank mirrors pkg/subs ranking at the endpoint level: zh < en < ja < rest.
