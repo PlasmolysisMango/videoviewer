@@ -24,10 +24,6 @@ abstract class PlayerEngine {
   /// 原始视频尺寸；未知时返回 Size.zero。
   Size get videoSize;
 
-  /// 丢弃缓存的画面 widget：下次 buildView() 返回全新实例。
-  /// 用于全屏切换等整树重挂场景，避免同一实例 reparent 导致黑屏。
-  void recreateView();
-
   Future<void> play();
   Future<void> pause();
   Future<void> seek(Duration d);
@@ -69,8 +65,9 @@ class VideoPlayerEngine implements PlayerEngine {
 
   final VideoPlayerController _c;
 
-  /// 缓存画面 widget 实例：播放中重复 build 复用同一实例，
-  /// 避免 Texture 层频繁重挂导致闪黑；全屏切换时 recreateView() 丢弃重挂。
+  /// 画面 widget 实例：首次创建后长期复用。全屏切换期间由播放页
+  /// 保证父链同构（同一 slot），实例被直接复用；重建实例反而
+  /// 会造成 unmount/remount 竞态，是 Android Texture 黑帧的来源。
   Widget? _view;
 
   @override
@@ -113,12 +110,9 @@ class VideoPlayerEngine implements PlayerEngine {
 
   @override
   Widget buildView() {
-    // 惰性创建：播放中保持复用；切换全屏后由 recreateView 置空重建。
+    // 惰性首次创建，之后永远复用同一实例。
     return _view ??= VideoPlayer(_c);
   }
-
-  @override
-  void recreateView() => _view = null;
 
   @override
   Future<void> dispose() {
@@ -159,7 +153,7 @@ class MediaKitEngine implements PlayerEngine {
   final Player _player;
   late final VideoController _controller;
 
-  /// 缓存画面 widget 实例：同 VideoPlayerEngine，防 Texture 重挂闪屏。
+  /// 画面 widget 实例：同 VideoPlayerEngine，长期复用。
   Widget? _view;
 
   List<StreamSubscription<dynamic>> _subs = const [];
@@ -218,16 +212,13 @@ class MediaKitEngine implements PlayerEngine {
 
   @override
   Widget buildView() {
-    // 惰性创建：播放中保持复用；切换全屏后由 recreateView 置空重建。
+    // 惰性首次创建，之后永远复用同一实例。
     return _view ??= Video(
       controller: _controller,
       controls: NoVideoControls,
       fit: BoxFit.contain,
     );
   }
-
-  @override
-  void recreateView() => _view = null;
 
   @override
   Future<void> dispose() async {

@@ -346,14 +346,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   /// 切换全屏：横屏全屏 + 隐藏状态栏。
-  /// 切换时丢弃引擎缓存的画面 widget：普通/全屏两棵树的布局差异大，
-  /// 同一实例 reparent 会让新旧 State 短暂交错导致 Texture 黑帧。
+  /// 画面 widget 的父链在普通/全屏两分支同构（见 _buildVideoArea），
+  /// 同一实例被直接复用而非重建——reparent/unmount 正是黑帧来源。
   void _toggleFullscreen() {
     setState(() {
       _isFullscreen = !_isFullscreen;
       // 切换全屏时确保控制 UI 可见，方便用户退出全屏
       _controlsVisible = true;
-      _controller?.recreateView();
     });
     if (_isFullscreen) {
       SystemChrome.setPreferredOrientations([
@@ -382,9 +381,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            Positioned.fill(
-              child: _buildVideoArea(c, initialized),
-            ),
+            _buildVideoArea(c, initialized),
             // 亮度遮罩
             Positioned.fill(
               child: IgnorePointer(
@@ -512,30 +509,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     );
   }
 
-  /// 视频画面区：根据是否全屏选择 AspectRatio 或 FittedBox 填满。
+  /// 视频画面区：普通/全屏共用同一棵 widget 结构（Positioned.fill >
+  /// Center > FittedBox > SizedBox > 画面实例），仅 cover/contain 与
+  /// 尺寸值不同——切全屏时各层 slot 同构，画面实例（引擎缓存的同一
+  /// VideoPlayer/Video widget）被直接复用而非 unmount 重建，从根上
+  /// 消除 reparent 竞态导致的 Android Texture 黑帧。
   Widget _buildVideoArea(PlayerEngine? c, bool initialized) {
-    if (!initialized || c == null) return const SizedBox.shrink();
-    if (_isFullscreen) {
-      final size = c.videoSize;
-      if (size.width > 0 && size.height > 0) {
-        // 全屏：FittedBox cover 填满屏幕，保持比例裁切多余部分
-        return FittedBox(
-          fit: BoxFit.cover,
+    if (!initialized || c == null) {
+      return const Positioned.fill(child: SizedBox.shrink());
+    }
+    final size = c.videoSize;
+    final hasSize = size.width > 0 && size.height > 0;
+    // 全屏 cover 铺满裁切；普通 contain 等价原 AspectRatio 效果。
+    // 分辨率未知时用 16:9 保底（与 aspectRatio getter 默认一致）。
+    return Positioned.fill(
+      child: Center(
+        child: FittedBox(
+          fit: _isFullscreen ? BoxFit.cover : BoxFit.contain,
           child: SizedBox(
-            width: size.width,
-            height: size.height,
+            width: hasSize ? size.width : 16,
+            height: hasSize ? size.height : 9,
             child: c.buildView(),
           ),
-        );
-      }
-      // 分辨率未知：直接铺满由引擎内部 contain 适配
-      return SizedBox.expand(child: c.buildView());
-    }
-    // 普通模式：AspectRatio 保持比例
-    return Center(
-      child: AspectRatio(
-        aspectRatio: c.aspectRatio,
-        child: c.buildView(),
+        ),
       ),
     );
   }
