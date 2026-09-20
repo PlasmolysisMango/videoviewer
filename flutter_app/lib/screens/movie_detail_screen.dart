@@ -74,7 +74,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   int _galleryPage = 0;
   // 字幕预加载：进入详情即后台拉取，就绪后显示简洁提示。
   LoadedSubtitle? _subtitle;
-  // 字幕搜索是否已完成（区分"加载中不显示"与"无结果提示"）。
+  // 字幕搜索状态：检查中（转圈提示）→ 完成（区分成功与无结果提示）。
+  bool _subtitleChecking = false;
   bool _subtitleChecked = false;
 
   @override
@@ -102,8 +103,14 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     final code = (number ?? widget.movieNumber).trim();
     if (code.isEmpty || _subtitleChecked) return;
     _subtitleChecked = true;
+    if (mounted) setState(() => _subtitleChecking = true);
     SubtitleService.instance.load(code).then((ls) {
-      if (mounted) setState(() => _subtitle = ls);
+      if (mounted) {
+        setState(() {
+          _subtitle = ls;
+          _subtitleChecking = false;
+        });
+      }
     });
   }
 
@@ -1016,9 +1023,26 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          // 字幕状态提示：成功绿色（如"中文字幕已加载"）；
+          // 字幕状态提示：检查中转圈；成功绿色（如"中文字幕已加载"）；
           // 无结果/失败灰色且可点击，进手动选择面板兼作兑底。
-          if (_subtitleChecked)
+          if (_subtitleChecking)
+            const Padding(
+              padding: EdgeInsets.only(top: 4, left: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 13,
+                    height: 13,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 5),
+                  Text('搜索字幕中…',
+                      style: TextStyle(fontSize: 12)),
+                ],
+              ),
+            )
+          else if (_subtitleChecked)
             Padding(
               padding: const EdgeInsets.only(top: 2),
               child: InkWell(

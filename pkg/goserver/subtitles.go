@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -91,23 +92,35 @@ func (s *Server) handleSubtitlesAuto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no subtitles found for "+code)
 		return
 	}
-	// Client.Search already ranks Chinese first; be explicit anyway.
-	best := items[0]
-	for _, it := range items[1:] {
-		if langRank(it.Lang) < langRank(best.Lang) {
-			best = it
+	// Rank candidates by language (zh first) and try downloading each in
+	// order, capped at a few attempts: the top entry's detail page or file
+	// can be dead while the rest are fine — manual search lists them all
+	// and would succeed, so auto must fall through to the next candidate.
+	sort.SliceStable(items, func(i, j int) bool {
+		return langRank(items[i].Lang) < langRank(items[j].Lang)
+	})
+	pick := items[0]
+	downloaded := subs.Downloaded{}
+	const maxAttempts = 6
+	for i, it := range items {
+		if i >= maxAttempts {
+			break
+		}
+		got, derr := c.Download(ctx, it.Source, it.Ref, it.Lang)
+		if derr == nil && len(got.Body) > 0 {
+			pick = it
+			downloaded = got
+			break
 		}
 	}
-
-	d, err := c.Download(ctx, best.Source, best.Ref, best.Lang)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+	if len(downloaded.Body) == 0 {
+		writeError(w, http.StatusBadGateway, "all subtitle downloads failed for "+code)
 		return
 	}
-	d.Body = simplifySubtitle(d.Lang, d.Body)
-	cacheSubtitle(autoName, d.Body)
-	cacheSubMeta(autoName, subMeta{Source: best.Source, Lang: d.Lang, Name: d.Name})
-	writeSRT(w, d.Body, subtitleHeaders(best.Source, d.Lang, d.Name))
+	downloaded.Body = simplifySubtitle(downloaded.Lang, downloaded.Body)
+	cacheSubtitle(autoName, downloaded.Body)
+	cacheSubMeta(autoName, subMeta{Source: pick.Source, Lang: downloaded.Lang, Name: downloaded.Name})
+	writeSRT(w, downloaded.Body, subtitleHeaders(pick.Source, downloaded.Lang, downloaded.Name))
 }
 
 // handleSubtitlesDownload fetches one specific subtitle.

@@ -184,41 +184,50 @@ class SubtitleService extends ChangeNotifier {
     } catch (_) {}
 
     try {
-      final r = await _client!.autoSubtitle(code);
-      final srt = r['srt'] ?? '';
-      if (srt.isEmpty) {
-        _mem[code] = null;
-        _negAt[code] = DateTime.now();
-        return null;
-      }
-      final cues = parseSrt(srt);
-      if (cues.isEmpty) {
-        _mem[code] = null;
-        _negAt[code] = DateTime.now();
-        return null;
-      }
-      final ls = LoadedSubtitle(
-        code: code,
-        source: r['source'] ?? '',
-        lang: r['lang'] ?? '',
-        name: r['name'] ?? '',
-        cues: cues,
-      );
-      _mem[code] = ls;
-      unawaited(DataCache.instance.write('subs.auto.$code', {
-        'source': ls.source,
-        'lang': ls.lang,
-        'name': ls.name,
-        'srt': srt,
-      }));
-      notifyListeners();
-      return ls;
+      final ls = await _fetchAuto(code);
+      if (ls != null) return ls;
+      // 确定性无结果（srt/解析为空）：负缓存。
+      _mem[code] = null;
+      _negAt[code] = DateTime.now();
+      return null;
     } catch (_) {
-      // 会话内负缓存（带 TTL）：本页不反复打网络，10 分钟后允许重试。
+      // 偶发失败（后端被冻结/网络抖动）：延时自动重试一次，
+      // 仍失败才负缓存（2 分钟后也可手动搜索兑底）。
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      try {
+        final ls = await _fetchAuto(code);
+        if (ls != null) return ls;
+      } catch (_) {}
       _mem[code] = null;
       _negAt[code] = DateTime.now();
       return null;
     }
+  }
+
+  /// 请求 auto 端点并应用结果（缓存/通知）；确定性空返回 null，
+  /// 网络异常抛出由调用方决定重试策略。
+  Future<LoadedSubtitle?> _fetchAuto(String code) async {
+    final r = await _client!.autoSubtitle(code);
+    final srt = r['srt'] ?? '';
+    if (srt.isEmpty) return null;
+    final cues = parseSrt(srt);
+    if (cues.isEmpty) return null;
+    final ls = LoadedSubtitle(
+      code: code,
+      source: r['source'] ?? '',
+      lang: r['lang'] ?? '',
+      name: r['name'] ?? '',
+      cues: cues,
+    );
+    _mem[code] = ls;
+    unawaited(DataCache.instance.write('subs.auto.$code', {
+      'source': ls.source,
+      'lang': ls.lang,
+      'name': ls.name,
+      'srt': srt,
+    }));
+    notifyListeners();
+    return ls;
   }
 
   /// 手动选择条目：下载→解析→写缓存，与 auto 结果同一存储路径，
