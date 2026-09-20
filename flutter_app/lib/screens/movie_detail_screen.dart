@@ -7,12 +7,13 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../api/models.dart';
-import '../providers/subscription_provider.dart';
+import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/data_cache.dart';
 import '../services/history.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
+import '../services/subtitle_service.dart';
 import '../widgets/common_ui.dart';
 import 'hls_player.dart';
 import 'search_screen.dart';
@@ -70,6 +71,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   bool _isLoading = true;
   String? _error;
   int _galleryPage = 0;
+  // 字幕预加载：进入详情即后台拉取，播放时已就绪（服务内去重/缓存）。
+  LoadedSubtitle? _subtitle;
+  bool _subtitleLoading = false;
 
   @override
   void initState() {
@@ -87,6 +91,21 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       title: '',
       cover: '',
     );
+    _preloadSubtitle();
+  }
+
+  /// 预加载字幕（详情页展示"已加载"提示，播放器直接复用同一份缓存）。
+  void _preloadSubtitle([String? number]) {
+    final code = (number ?? widget.movieNumber).trim();
+    if (code.isEmpty || _subtitle != null) return;
+    setState(() => _subtitleLoading = true);
+    SubtitleService.instance.load(code).then((ls) {
+      if (!mounted) return;
+      setState(() {
+        _subtitle = ls;
+        _subtitleLoading = false;
+      });
+    });
   }
 
   /// 从后端拉取已注册的 AV 数据源列表（missav/jable/hohoj）。
@@ -181,6 +200,11 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     }
     AppLogger.info(
         'Movie loaded: ${_movieData?['number']}, magnets: ${_magnets.length}');
+    // movieNumber 为空进入时，用详情返回的番号补拉一次字幕。
+    final num = (m?['number'] as String?)?.trim() ?? '';
+    if (num.isNotEmpty && num != widget.movieNumber.trim()) {
+      _preloadSubtitle(num);
+    }
     _precacheGallery();
   }
 
@@ -661,41 +685,152 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
-  /// 收藏按钮：加入收藏夹（复用订阅存储 kind=movie，与订阅相互独立）。
+  /// 收藏按钮：♥收藏 = JavDB "想看"标记（与登录账号双向同步，本地缓存）。
   Widget _buildFavButton(BuildContext context) {
-    final provider = context.watch<SubscriptionProvider>();
-    final number =
-        _movieData?['number'] as String? ?? widget.movieNumber;
-    final cover = _movieData?['cover_url'] as String?;
-    final fav = provider.isSubscribed(kSubMovie, widget.movieId);
+    final userState = context.watch<UserStateProvider>();
+    final movie = _movieData ?? {'id': widget.movieId, 'number': widget.movieNumber};
+    final fav = userState.isWantWatch(widget.movieId);
     return IconButton(
       icon: Icon(
         fav ? Icons.favorite : Icons.favorite_border,
         color: fav ? Colors.redAccent : null,
       ),
-      tooltip: fav ? '取消收藏' : '收藏',
-      onPressed: () async {
-        try {
-          if (fav) {
-            await provider.unsubscribe(kSubMovie, widget.movieId);
-          } else {
-            await provider.favoriteMovie(widget.movieId, number, cover: cover);
-          }
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(fav ? '已取消收藏' : '已加入收藏'),
-              duration: const Duration(seconds: 1),
-            ));
-          }
-        } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('操作失败: $e'),
-              backgroundColor: Colors.red,
-            ));
-          }
-        }
-      },
+      tooltip: fav ? '取消想看' : '想看',
+      onPressed: () => _toggleMark(context, movie, kMarkWantWatch),
+    );
+  }
+
+  /// 看过按钮：JavDB "看过"标记（与登录账号双向同步）。
+  Widget _buildWatchedButton(BuildContext context) {
+    final userState = context.watch<UserStateProvider>();
+    final movie = _movieData ?? {'id': widget.movieId, 'number': widget.movieNumber};
+    final watched = userState.isWatched(widget.movieId);
+    return IconButton(
+      icon: Icon(
+        watched ? Icons.check_circle : Icons.check_circle_outline,
+        color: watched ? Colors.green : null,
+      ),
+      tooltip: watched ? '取消看过' : '看过',
+      onPressed: () => _toggleMark(context, movie, kMarkWatched),
+    );
+  }
+
+  Future<void> _toggleMark(
+      BuildContext context, Map<String, dynamic> movie, String status) async {
+    final label = status == kMarkWantWatch ? '想看' : '看过';
+    try {
+      final result =
+          await context.read<UserStateProvider>().toggleMark(movie, status);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(result == null ? '已取消$label' : '已标记$label'),
+        duration: const Duration(seconds: 1),
+      ));
+    } catch (e) {
+      if (!context.mounted) return;
+      final needLogin = e.toString().contains('login required');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(needLogin ? '需要登录 JavDB 账号' : '操作失败: $e'),
+        backgroundColor: needLogin ? Colors.orange : Colors.red,
+      ));
+    }
+  }
+
+  /// 清单按钮：展示我的清单及该影片的在列状态。
+  /// 移动端 API 仅支持从清单移除（无加入端点），未在列的清单仅供查看。
+  Widget _buildListButton(BuildContext context) {
+    return IconButton(
+      icon: const Icon(Icons.playlist_add),
+      tooltip: '清单',
+      onPressed: _movieData == null ? null : () => _showListDialog(context),
+    );
+  }
+
+  Future<void> _showListDialog(BuildContext context) async {
+    final userState = context.read<UserStateProvider>();
+    // 带 movieId 拉取，拿到每个清单的 has_movie 状态。
+    await userState.refreshLists(movieId: widget.movieId);
+    if (!context.mounted) return;
+    final lists = userState.lists;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text('影片清单',
+                  style: Theme.of(sheetContext).textTheme.titleMedium),
+              trailing: IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.of(sheetContext).pop(),
+              ),
+            ),
+            const Divider(height: 1),
+            if (lists.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('暂无清单（需登录）'),
+              )
+            else
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: lists.length,
+                  itemBuilder: (_, i) {
+                    final list = lists[i];
+                    final id = (list['id'] as String?) ?? '';
+                    final name = (list['name'] as String?) ?? '';
+                    final inList = list['has_movie'] == true;
+                    return ListTile(
+                      leading: Icon(
+                        inList ? Icons.playlist_add_check : Icons.playlist_play,
+                        color: inList ? Colors.green : null,
+                      ),
+                      title: Text(name),
+                      subtitle: Text(inList ? '已在清单（点按移除）' : '不在清单'),
+                      onTap: inList
+                          ? () async {
+                              try {
+                                await userState.removeMovieFromList(
+                                    id, name, widget.movieId);
+                                if (sheetContext.mounted) {
+                                  Navigator.of(sheetContext).pop();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                        content: Text('已从「$name」移除'),
+                                        duration:
+                                            const Duration(seconds: 1)),
+                                  );
+                                }
+                              } catch (e) {
+                                if (sheetContext.mounted) {
+                                  ScaffoldMessenger.of(sheetContext)
+                                      .showSnackBar(SnackBar(
+                                    content: Text('移除失败：$e'),
+                                    backgroundColor: Colors.red,
+                                  ));
+                                }
+                              }
+                            }
+                          : null,
+                    );
+                  },
+                ),
+              ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Text(
+                '移动端接口暂不支持从 App 加入清单，可在 JavDB 客户端添加后再此管理',
+                style: TextStyle(
+                    fontSize: 12, color: Theme.of(sheetContext).hintColor),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -705,7 +840,11 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       appBar: AppBar(
         title: Text(_movieData?['number'] as String? ?? '电影详情'),
         actions: [
-          if (_movieData != null) _buildFavButton(context),
+          if (_movieData != null) ...[
+            _buildFavButton(context),
+            _buildWatchedButton(context),
+            _buildListButton(context),
+          ],
         ],
       ),
       body: _isLoading
@@ -878,6 +1017,32 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ],
           ),
           const SizedBox(height: 10),
+          // 字幕预加载状态提示：成功绿字、加载中灰字，失败不占位
+          if (_subtitle != null || _subtitleLoading)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                children: [
+                  Icon(
+                    _subtitle != null
+                        ? Icons.closed_caption
+                        : Icons.hourglass_empty,
+                    size: 15,
+                    color: _subtitle != null ? Colors.green : Colors.grey,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    _subtitle != null
+                        ? '字幕已加载 · ${_subtitle!.langLabel} · 播放时自动显示'
+                        : '字幕加载中…',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _subtitle != null ? Colors.green : Colors.grey,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // 播放/下载按钮独占一行等宽展示；AV 流在后台解析，点击播放时如未就绪会现场补拉
           Row(
             children: [

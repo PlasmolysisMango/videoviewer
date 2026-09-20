@@ -22,6 +22,10 @@ class _ListSearchScreenState extends State<ListSearchScreen> {
   List<Map<String, dynamic>> _lists = [];
   bool _loading = false;
   String? _error;
+  // 分页：后端每页固定 20 条，底部"加载更多"逐页追加以展示全部结果。
+  int _page = 1;
+  bool _hasMore = false;
+  bool _loadingMore = false;
 
   @override
   void initState() {
@@ -43,6 +47,7 @@ class _ListSearchScreenState extends State<ListSearchScreen> {
     setState(() {
       _loading = true;
       _error = null;
+      _page = 1;
     });
     try {
       final lists = await _client.searchLists(q);
@@ -50,6 +55,8 @@ class _ListSearchScreenState extends State<ListSearchScreen> {
       setState(() {
         _lists = lists;
         _loading = false;
+        // 整页说明大概率还有下一页。
+        _hasMore = lists.length >= 20;
       });
       AppLogger.info('List search "$q": ${lists.length} lists');
     } catch (e) {
@@ -59,6 +66,27 @@ class _ListSearchScreenState extends State<ListSearchScreen> {
         _loading = false;
       });
       AppLogger.error('List search failed', e);
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore) return;
+    final q = _searchController.text.trim();
+    if (q.isEmpty) return;
+    setState(() => _loadingMore = true);
+    try {
+      final lists = await _client.searchLists(q, page: _page + 1);
+      if (!mounted) return;
+      setState(() {
+        _lists.addAll(lists);
+        _page += 1;
+        _hasMore = lists.length >= 20;
+        _loadingMore = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+      AppLogger.error('List search load more failed', e);
     }
   }
 
@@ -100,9 +128,31 @@ class _ListSearchScreenState extends State<ListSearchScreen> {
                                 style: TextStyle(color: Theme.of(context).hintColor)))
                         : ListView.separated(
                             padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                            itemCount: _lists.length,
+                            itemCount:
+                                _lists.length + (_hasMore ? 1 : 0),
                             separatorBuilder: (_, __) => const SizedBox(height: 8),
                             itemBuilder: (context, i) {
+                              if (i >= _lists.length) {
+                                // 尾部加载更多（整页结果时展示）。
+                                return Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 6),
+                                  child: OutlinedButton.icon(
+                                    onPressed:
+                                        _loadingMore ? null : _loadMore,
+                                    icon: _loadingMore
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2))
+                                        : const Icon(Icons.expand_more),
+                                    label: Text(_loadingMore
+                                        ? '加载中...'
+                                        : '加载更多'),
+                                  ),
+                                );
+                              }
                               final l = _lists[i];
                               return _buildListCard(context, l);
                             },

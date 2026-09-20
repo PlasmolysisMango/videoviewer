@@ -15,6 +15,10 @@ class PlayerControlBar extends StatelessWidget {
   final bool isFullscreen;
   final VoidCallback onToggleFullscreen;
 
+  /// 字幕设置入口（null 则不显示按钮）；subtitleOn 控制图标态。
+  final VoidCallback? onOpenSubtitleSettings;
+  final bool subtitleOn;
+
   static const _rates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
   const PlayerControlBar({
@@ -31,6 +35,8 @@ class PlayerControlBar extends StatelessWidget {
     required this.onRateChanged,
     required this.isFullscreen,
     required this.onToggleFullscreen,
+    this.onOpenSubtitleSettings,
+    this.subtitleOn = false,
   });
 
   String _fmt(Duration d) {
@@ -127,6 +133,18 @@ class PlayerControlBar extends StatelessWidget {
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                   ),
                 ),
+              ),
+            // 字幕设置入口
+            if (onOpenSubtitleSettings != null)
+              IconButton(
+                icon: Icon(
+                  subtitleOn
+                      ? Icons.closed_caption
+                      : Icons.closed_caption_off,
+                  color: Colors.white,
+                ),
+                tooltip: '字幕设置',
+                onPressed: onOpenSubtitleSettings,
               ),
             // 全屏按钮
             IconButton(

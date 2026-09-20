@@ -9,10 +9,12 @@ import 'api/client.dart';
 import 'providers/auth_provider.dart';
 import 'providers/subscription_provider.dart';
 import 'providers/theme_provider.dart';
+import 'providers/user_state_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/backend_launcher.dart';
 import 'services/logger.dart';
+import 'services/subtitle_service.dart';
 
 String? _serverStartError;
 
@@ -79,6 +81,10 @@ Future<void> _runApp() async {
   // Create API client using the backend URL
   final client = JavDBClient(BackendLauncher.baseUrl);
 
+  // 字幕服务：绑定 API client 并恢复本地设置（字号/偏移/开关）。
+  SubtitleService.bind(client);
+  unawaited(SubtitleService.instance.loadSettings());
+
   runApp(MyApp(client: client));
 }
 
@@ -97,6 +103,13 @@ class MyApp extends StatelessWidget {
         ),
         ChangeNotifierProvider(
           create: (_) => SubscriptionProvider(client)..load(),
+        ),
+        // 用户态（想看/看过/清单）：先读本地缓存立即可用，后台拉取同步。
+        ChangeNotifierProvider(
+          create: (context) => UserStateProvider(
+            client,
+            context.read<AuthProvider>(),
+          )..init(),
         ),
       ],
       child: Consumer<ThemeProvider>(

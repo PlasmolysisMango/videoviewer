@@ -70,7 +70,7 @@ class AuthProvider with ChangeNotifier {
       AppLogger.info('Login successful');
       return true;
     } catch (e) {
-      _error = e.toString();
+      _error = _friendlyLoginError(e);
       _isLoading = false;
       notifyListeners();
       AppLogger.error('Login failed', e);
@@ -78,7 +78,56 @@ class AuthProvider with ChangeNotifier {
     }
   }
 
+  /// 登录失败的用户可读提示：上游繁体错误/网络异常转成简洁中文，
+  /// 避免把 Exception(...) 原文直接甩给用户。
+  static String _friendlyLoginError(Object e) {
+    final msg = e.toString();
+    if (msg.contains('帳號') ||
+        msg.contains('账号') ||
+        msg.contains('密碼') ||
+        msg.contains('密码') ||
+        msg.contains('credential') ||
+        msg.contains('401')) {
+      return '用户名或密码错误，请重新输入';
+    }
+    if (msg.contains('SocketException') ||
+        msg.contains('Connection refused') ||
+        msg.contains('Failed host lookup') ||
+        msg.contains('Connection closed')) {
+      return '无法连接本地服务，请确认后端已启动';
+    }
+    // 去掉 Exception( ) 包装，其余原样展示
+    final m = RegExp(r'^Exception\((.*)\)$', dotAll: true).firstMatch(msg);
+    return m?.group(1) ?? msg;
+  }
+
+  /// 静默重登（登录态失效时由用户态同步自动触发）：不改动 _error/_isLoading，
+  /// 不打断当前界面；成功后仅刷新 token。无保存凭据或重登失败返回 false。
+  Future<bool> silentRelogin() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedUser = prefs.getString('saved_user');
+    final savedPass = prefs.getString('saved_pass');
+    if (savedUser == null || savedUser.isEmpty ||
+        savedPass == null || savedPass.isEmpty) {
+      return false;
+    }
+    try {
+      AppLogger.info('Silent re-login for $savedUser');
+      final result = await _client.login(savedUser, savedPass);
+      _username = result['username'] as String?;
+      await prefs.setString('jwt_token', _client.token ?? '');
+      await prefs.setString('username', _username ?? '');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      AppLogger.warning('Silent re-login failed: $e');
+      return false;
+    }
+  }
+
   Future<void> logout() async {
+    // 先通知后端清除会话（session.json 与凭据）。
+    await _client.logout();
     _client.setToken(null);
     _username = null;
     final prefs = await SharedPreferences.getInstance();
@@ -86,6 +135,9 @@ class AuthProvider with ChangeNotifier {
     await prefs.remove('username');
     await prefs.remove('saved_user');
     await prefs.remove('saved_pass');
+    await prefs.remove('user_marks_want_watch');
+    await prefs.remove('user_marks_watched');
+    await prefs.remove('user_lists');
     notifyListeners();
   }
 }

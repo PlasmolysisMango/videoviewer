@@ -243,6 +243,138 @@ class JavDBClient {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // 用户态（标记/清单）：与 JavDB 登录账号双向同步
+  // ---------------------------------------------------------------------------
+
+  /// 401 时抛出含 "login required" 的异常，供上层触发静默重登。
+  Exception _authOrServer(http.Response response, String fallback) {
+    String msg = fallback;
+    try {
+      msg = (jsonDecode(response.body)['error'] as String?) ?? fallback;
+    } catch (_) {}
+    if (response.statusCode == 401) {
+      return Exception('login required: $msg');
+    }
+    return Exception(msg);
+  }
+
+  /// 我的想看/看过影片（与 JavDB 账号同步）。
+  /// status: want_watch | watched
+  Future<List<Map<String, dynamic>>> getUserMarks(String status,
+      {int page = 1}) async {
+    final uri = Uri.parse('$baseUrl/api/user/marks')
+        .replace(queryParameters: {'status': status, 'page': page.toString()});
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['movies'] as List?)
+              ?.map((e) => e as Map<String, dynamic>)
+              .toList() ??
+          const <Map<String, dynamic>>[];
+    }
+    throw _authOrServer(response, 'Get marks failed');
+  }
+
+  /// 标记影片为想看/看过（与 JavDB 账号同步）。
+  Future<Map<String, dynamic>> setUserMark(String movieId, String status) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/user/marks'),
+      headers: _headers,
+      body: jsonEncode({'movie_id': movieId, 'status': status}),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body)['mark'] as Map<String, dynamic>? ?? {};
+    }
+    throw _authOrServer(response, 'Set mark failed');
+  }
+
+  /// 取消标记（幂等）。
+  Future<void> clearUserMark(String movieId) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/user/marks')
+          .replace(queryParameters: {'movie_id': movieId}),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw _authOrServer(response, 'Clear mark failed');
+    }
+  }
+
+  /// 我的清单。传 [movieId] 时返回带 has_movie 标志的 simple 变体。
+  Future<List<Map<String, dynamic>>> getUserLists({String? movieId}) async {
+    final uri = Uri.parse('$baseUrl/api/user/lists').replace(queryParameters: {
+      if (movieId != null && movieId.isNotEmpty) 'movie_id': movieId,
+    });
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['lists'] as List?)
+              ?.map((e) => e as Map<String, dynamic>)
+              .toList() ??
+          const <Map<String, dynamic>>[];
+    }
+    throw _authOrServer(response, 'Get lists failed');
+  }
+
+  /// 新建清单，返回含 id 的清单对象。
+  Future<Map<String, dynamic>> createUserList(String name) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/user/lists'),
+      headers: _headers,
+      body: jsonEncode({'name': name}),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body)['list'] as Map<String, dynamic>? ?? {};
+    }
+    throw _authOrServer(response, 'Create list failed');
+  }
+
+  /// 删除清单。
+  Future<void> deleteUserList(String id) async {
+    final response = await _http.delete(
+      Uri.parse('$baseUrl/api/user/lists/$id'),
+      headers: _headers,
+    );
+    if (response.statusCode != 200) {
+      throw _authOrServer(response, 'Delete list failed');
+    }
+  }
+
+  /// 清单改名。
+  Future<void> renameUserList(String id, String name) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/user/lists/$id/rename'),
+      headers: _headers,
+      body: jsonEncode({'name': name}),
+    );
+    if (response.statusCode != 200) {
+      throw _authOrServer(response, 'Rename list failed');
+    }
+  }
+
+  /// 从清单移除影片（移动端 API 仅提供移除方向）。
+  Future<void> removeMovieFromList(
+      String listId, String listName, String movieId) async {
+    final response = await _http.post(
+      Uri.parse('$baseUrl/api/user/lists/$listId/remove-movie'),
+      headers: _headers,
+      body: jsonEncode({'movie_id': movieId, 'list_name': listName}),
+    );
+    if (response.statusCode != 200) {
+      throw _authOrServer(response, 'Remove from list failed');
+    }
+  }
+
+  /// 退出登录（清除后端会话与本地凭据）。
+  Future<void> logout() async {
+    try {
+      await _http.post(Uri.parse('$baseUrl/api/logout'), headers: _headers);
+    } catch (_) {
+      // 本地清理不受影响，忽略网络错误。
+    }
+  }
+
   Future<Map<String, dynamic>> getMagnets(String movieId) async {
     final response = await _http.get(
       Uri.parse('$baseUrl/api/magnets/$movieId'),
@@ -511,6 +643,70 @@ class JavDBClient {
     } else {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'AV download failed');
+    }
+  }
+
+  /// 字幕：搜索某番号在 subtitlecat / avsubtitles 上的可用条目列表。
+  Future<Map<String, dynamic>> searchSubtitles(String code) async {
+    final uri = Uri.parse('$baseUrl/api/subtitles/search')
+        .replace(queryParameters: {'code': code});
+    final response = await _http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Subtitle search failed');
+    }
+  }
+
+  /// 字幕：自动挑选最佳语言（中文优先）并返回 SRT 文本。
+  /// 来源信息在响应头（package:http 已归一为小写键）。
+  Future<Map<String, String?>> autoSubtitle(String code) async {
+    final uri = Uri.parse('$baseUrl/api/subtitles/auto')
+        .replace(queryParameters: {'code': code});
+    final response = await _http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return {
+        'srt': response.body,
+        'source': response.headers['x-sub-source'],
+        'lang': response.headers['x-sub-lang'],
+        'name': response.headers['x-sub-name'],
+      };
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Subtitle load failed');
+    }
+  }
+
+  /// 字幕：下载指定条目，返回 SRT 文本与来源头。
+  Future<Map<String, String?>> downloadSubtitle({
+    required String code,
+    required String source,
+    required String ref,
+    String? lang,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/subtitles/download').replace(
+      queryParameters: {
+        'code': code,
+        'source': source,
+        'ref': ref,
+        if (lang != null && lang.isNotEmpty) 'lang': lang,
+      },
+    );
+    final response = await _http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return {
+        'srt': response.body,
+        'source': response.headers['x-sub-source'],
+        'lang': response.headers['x-sub-lang'],
+        'name': response.headers['x-sub-name'],
+      };
+    } else {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Subtitle download failed');
     }
   }
 }

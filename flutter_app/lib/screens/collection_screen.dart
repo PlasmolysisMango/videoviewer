@@ -26,10 +26,10 @@ class CollectionScreen extends StatefulWidget {
 }
 
 class _CollectionScreenState extends State<CollectionScreen> {
-  /// 合集清单：总榜 + 近五年年度榜 + 四个类型榜。
-  /// （mobile API 的 year 切面按需可继续往前加年份。）
+  /// 合集清单：总榜 + 年度榜（含 2026）+ 四个类型榜。
   static const _collections = [
     CollectionSpec('TOP250'),
+    CollectionSpec('2026', year: '2026'),
     CollectionSpec('2025', year: '2025'),
     CollectionSpec('2024', year: '2024'),
     CollectionSpec('2023', year: '2023'),

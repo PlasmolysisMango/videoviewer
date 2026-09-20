@@ -24,6 +24,8 @@ import 'log_screen.dart';
 import 'movie_detail_screen.dart';
 import 'ranking_screen.dart';
 import 'search_screen.dart';
+import 'settings_screen.dart';
+import 'user_lists_screen.dart';
 
 /// 首页：现代流媒体风布局，背景跟随全局主题。
 /// 区块：为你推荐（订阅合集 + TOP250 随机池）、榜单入口、
@@ -42,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
   /// TOP250 合集切面（与合集页一致）：热门推荐从其中随机取样。
   static const _top250Facets = <(String?, String?)>[
     (null, null), // 总榜
+    ('2026', null),
     ('2025', null),
     ('2024', null),
     ('2023', null),
@@ -309,12 +312,107 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// 侧边栏：收纳较复杂的入口（收藏夹/历史/清单/设置/日志/账号）。
+  /// AppBar 仅保留深色模式等轻量操作，保持顶栏简洁。
+  Widget _buildDrawer(BuildContext context, AuthProvider auth) {
+    return Drawer(
+      child: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.local_movies,
+                          color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 8),
+                      const Text('JavDB',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w800, fontSize: 20)),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    auth.isLoggedIn ? '已登录：${auth.username ?? ''}' : '未登录',
+                    style: TextStyle(
+                        fontSize: 13, color: Theme.of(context).hintColor),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            _buildDrawerItem(context, Icons.favorite_border, '收藏夹（想看）',
+                () => const FavoritesScreen()),
+            _buildDrawerItem(context, Icons.history, '历史记录',
+                () => const HistoryScreen()),
+            _buildDrawerItem(context, Icons.playlist_add_check, '我的清单',
+                () => const UserListsScreen()),
+            _buildDrawerItem(context, Icons.settings_outlined, '设置',
+                () => const SettingsScreen()),
+            _buildDrawerItem(
+                context, Icons.bug_report, '日志', () => const LogScreen()),
+            const Divider(height: 1),
+            if (auth.isLoggedIn)
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('退出登录',
+                    style: TextStyle(color: Colors.redAccent)),
+                onTap: () async {
+                  Navigator.pop(context); // 先关闭侧边栏
+                  await auth.logout();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('已退出登录')),
+                    );
+                  }
+                },
+              )
+            else
+              ListTile(
+                leading: const Icon(Icons.login),
+                title: const Text('登录'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.of(context).pushNamed('/login');
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 侧边栏入口项：先关闭侧边栏再跳转目标页。
+  Widget _buildDrawerItem(
+    BuildContext context,
+    IconData icon,
+    String label,
+    Widget Function() screenBuilder,
+  ) {
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(label),
+      onTap: () {
+        Navigator.pop(context); // 关闭侧边栏
+        _push(context, screenBuilder());
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     return Scaffold(
+      drawer: _buildDrawer(context, auth),
       appBar: AppBar(
         elevation: 0,
+        // AppBar 仅保留深色模式；收藏/历史/清单/设置/日志/账号
+        // 等入口统一收纳进侧边栏（自动出现的汉堡按钮）。
+        actions: [_buildThemeMenu(context)],
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -325,43 +423,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.favorite_border),
-            tooltip: '收藏夹',
-            onPressed: () => _push(context, const FavoritesScreen()),
-          ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            tooltip: '历史记录',
-            onPressed: () => _push(context, const HistoryScreen()),
-          ),
-          _buildThemeMenu(context),
-          IconButton(
-            icon: const Icon(Icons.bug_report),
-            tooltip: '日志',
-            onPressed: () => _push(context, const LogScreen()),
-          ),
-          if (auth.isLoggedIn)
-            IconButton(
-              icon: const Icon(Icons.logout),
-              tooltip: '退出登录',
-              onPressed: () async {
-                await auth.logout();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('已退出登录')),
-                  );
-                }
-              },
-            )
-          else
-            TextButton.icon(
-              onPressed: () => Navigator.of(context).pushNamed('/login'),
-              icon: const Icon(Icons.login, size: 18),
-              label: const Text('登录'),
-            ),
-        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())

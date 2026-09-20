@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../api/models.dart';
 import '../providers/subscription_provider.dart';
+import '../providers/user_state_provider.dart';
 import '../services/image_url.dart';
 import 'actor_screen.dart';
 import 'genre_screen.dart';
@@ -42,47 +43,66 @@ class FavoritesScreen extends StatelessWidget {
   }
 }
 
-/// 影片收藏：竖版海报卡网格，点击进入详情。
+/// 影片收藏（= JavDB "想看"标记，与登录账号双向同步）：竖版海报卡网格。
+/// 本地缓存离线可看，下拉刷新从 JavDB 拉取最新。
 class _MovieFavorites extends StatelessWidget {
   const _MovieFavorites();
 
   @override
   Widget build(BuildContext context) {
-    final subs = context
-        .watch<SubscriptionProvider>()
-        .byKind(kSubMovie);
-    if (subs.isEmpty) {
-      return const Center(child: Text('在影片详情页点击 ♥ 收藏后展示在这里'));
+    final userState = context.watch<UserStateProvider>();
+    final movies = userState.wantWatch;
+    if (movies.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('在影片详情页点击 ♥（想看）后展示在这里'),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () => userState.refreshAll(),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('从 JavDB 同步'),
+            ),
+          ],
+        ),
+      );
     }
-    return GridView.builder(
-      padding: const EdgeInsets.all(12),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 120,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 2 / 3.4,
+    return RefreshIndicator(
+      onRefresh: () => userState.refreshAll(),
+      child: GridView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(12),
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 120,
+          mainAxisSpacing: 12,
+          crossAxisSpacing: 12,
+          childAspectRatio: 2 / 3.4,
+        ),
+        itemCount: movies.length,
+        itemBuilder: (context, i) {
+          final m = movies[i];
+          return _MovieFavCard(movie: m);
+        },
       ),
-      itemCount: subs.length,
-      itemBuilder: (context, i) {
-        final s = subs[i];
-        final id = (s['id'] as String?) ?? '';
-        final number = (s['name'] as String?) ?? '';
-        final cover = (s['avatar'] as String?) ?? '';
-        return _MovieFavCard(id: id, number: number, cover: cover);
-      },
     );
   }
 }
 
 class _MovieFavCard extends StatelessWidget {
-  final String id;
-  final String number;
-  final String cover;
+  final Map<String, dynamic> movie;
 
-  const _MovieFavCard({required this.id, required this.number, required this.cover});
+  const _MovieFavCard({required this.movie});
 
   @override
   Widget build(BuildContext context) {
+    final id = (movie['id'] as String?) ?? '';
+    final number = (movie['number'] as String?) ?? '';
+    // 优先竖版海报，回退封面/缩略图（与榜单卡一致）。
+    final cover = (movie['poster_url'] as String?) ??
+        (movie['cover_url'] as String?) ??
+        (movie['thumb_url'] as String?) ??
+        '';
     return InkWell(
       borderRadius: BorderRadius.circular(10),
       onTap: () => Navigator.push(
@@ -110,7 +130,7 @@ class _MovieFavCard extends StatelessWidget {
                         : const _CoverFallback(),
                   ),
                 ),
-                // 取消收藏
+                // 取消想看
                 Positioned(
                   right: 4,
                   top: 4,
@@ -228,7 +248,7 @@ class _KindFavorites extends StatelessWidget {
   }
 }
 
-/// 取消收藏/订阅按钮。
+/// 取消收藏/订阅按钮：影片（想看）走 JavDB 同步，其余走本地订阅。
 class _UnfavButton extends StatelessWidget {
   final String id;
   final String kind;
@@ -238,16 +258,33 @@ class _UnfavButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final provider = context.read<SubscriptionProvider>();
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: () async {
-        await provider.unsubscribe(kind, id);
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('已取消'),
-            duration: Duration(seconds: 1),
-          ));
+        try {
+          if (kind == kSubMovie) {
+            await context.read<UserStateProvider>().toggleMark(
+                  {'id': id},
+                  kMarkWantWatch,
+                );
+          } else {
+            await context
+                .read<SubscriptionProvider>()
+                .unsubscribe(kind, id);
+          }
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('已取消'),
+              duration: Duration(seconds: 1),
+            ));
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('操作失败: $e'),
+              backgroundColor: Colors.red,
+            ));
+          }
         }
       },
       child: Container(
