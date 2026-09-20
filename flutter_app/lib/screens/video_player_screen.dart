@@ -78,6 +78,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   // 字幕：详情页/播放器都会触发加载（服务内去重），就绪后 overlay 渲染。
   LoadedSubtitle? _subtitle;
 
+  // 画面实例代际：seek/切全屏后自增，重建 TextureLayer 强制重新取帧。
+  // ExoPlayer seek 后视频轨重新输出，但长期复用的 TextureLayer 在
+  // 部分设备上不重新合成（黑帧滞留、声音正常）；换 Key 重挂子树
+  // 让新 TextureLayer 拿到 seek 后的帧。平时 key 不变，零重建。
+  int _viewEpoch = 0;
+  Timer? _nudgeDebounce;
+
+  void _nudgeView() {
+    if (!mounted) return;
+    setState(() => _viewEpoch++);
+  }
+
+  /// 连续手势 seek 防抖：滑动中频繁 seek 只在停顿后重建一次。
+  void _scheduleNudge() {
+    _nudgeDebounce?.cancel();
+    _nudgeDebounce = Timer(const Duration(milliseconds: 300), () {
+      _nudgeView();
+    });
+  }
+
   // 自动标看过：进入时缓存 provider（dispose 阶段不能再读 context）。
   UserStateProvider? _userState;
 
@@ -190,6 +210,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   void dispose() {
+    _nudgeDebounce?.cancel();
     // 观影历史：记录本次播放进度（秒），超过阈值标记为"看过"。
     if (widget.movieId.isNotEmpty) {
       HistoryService.recordProgress(
@@ -269,9 +290,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       milliseconds: target.inMilliseconds.clamp(0, c.duration.inMilliseconds),
     );
     c.seek(clamped);
+    _scheduleNudge();
   }
 
-  void _seekTo(Duration d) => _controller?.seek(d);
+  Future<void> _seekTo(Duration d) async {
+    final c = _controller;
+    if (c == null) return;
+    await c.seek(d);
+    // 点击进度条跳转后立即重建画面层（见 _viewEpoch 注释）。
+    _nudgeView();
+  }
 
   void _setRate(double r) {
     setState(() => _rate = r);
@@ -363,6 +391,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     if (c != null && c.isPlaying) {
       unawaited(c.pause().then((_) => c.play()));
     }
+    // 旋转重排同样可能让 TextureLayer 停留黑帧，换 Key 重建画面层。
+    _nudgeView();
     if (_isFullscreen) {
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
@@ -551,7 +581,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             maxWidth: w,
             minHeight: h,
             maxHeight: h,
-            child: c.buildView(),
+            child: KeyedSubtree(
+              key: ValueKey('view$_viewEpoch'),
+              child: c.buildView(),
+            ),
           ),
         );
       }),
