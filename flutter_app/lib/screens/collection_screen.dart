@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../providers/subscription_provider.dart';
 import '../services/backend_launcher.dart';
+import '../services/data_cache.dart';
 import '../services/logger.dart';
 import 'list_detail_screen.dart';
 import 'list_search_screen.dart';
@@ -35,6 +37,10 @@ class _CollectionScreenState extends State<CollectionScreen> {
   late final JavDBClient _client;
   final _random = Random();
 
+  /// 题材/随机发现区块的持久缓存（6 小时）：重进页面直接展示，
+  /// 不再每次都等网络刷新；下拉刷新强制走网络并更新缓存。
+  static const _discoverCacheKey = 'collection.discover.v1';
+
   List<Map<String, dynamic>> _genreLists = []; // 来自订阅题材的推荐
   List<Map<String, dynamic>> _discoverLists = []; // 随机关键词发现
   bool _loading = true;
@@ -51,7 +57,32 @@ class _CollectionScreenState extends State<CollectionScreen> {
 
   /// 并行聚合：订阅题材名搜索（各取前 3 条，最多 5 个题材）+
   /// 随机关键词（2 个，各取前 8 条，随机页码 1-3）。单一来源失败静默跳过。
-  Future<void> _load() async {
+  /// 默认缓存优先；force=true（下拉刷新/重试）跳过缓存。
+  Future<void> _load({bool force = false}) async {
+    if (!force) {
+      try {
+        final cached = await DataCache.instance
+            .read(_discoverCacheKey, maxAge: const Duration(hours: 6));
+        if (cached is Map && mounted) {
+          final g = (cached['genre'] as List?)
+                  ?.map((e) => e as Map<String, dynamic>)
+                  .toList() ??
+              const <Map<String, dynamic>>[];
+          final d = (cached['discover'] as List?)
+                  ?.map((e) => e as Map<String, dynamic>)
+                  .toList() ??
+              const <Map<String, dynamic>>[];
+          if (g.isNotEmpty || d.isNotEmpty) {
+            setState(() {
+              _genreLists = g;
+              _discoverLists = d;
+              _loading = false;
+            });
+            return;
+          }
+        }
+      } catch (_) {}
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -85,6 +116,10 @@ class _CollectionScreenState extends State<CollectionScreen> {
         _discoverLists = discoverLists;
         _loading = false;
       });
+      unawaited(DataCache.instance.write(_discoverCacheKey, {
+        'genre': genreLists,
+        'discover': discoverLists,
+      }));
       AppLogger.info(
           'Collection page loaded: ${genreLists.length} genre + ${discoverLists.length} discover');
     } catch (e) {
@@ -159,12 +194,14 @@ class _CollectionScreenState extends State<CollectionScreen> {
                               color: Theme.of(context).colorScheme.error,
                               fontSize: 12)),
                       const SizedBox(height: 12),
-                      OutlinedButton(onPressed: _load, child: const Text('重试')),
+                      OutlinedButton(
+                          onPressed: () => _load(force: true),
+                          child: const Text('重试')),
                     ],
                   ),
                 )
               : RefreshIndicator(
-                  onRefresh: _load,
+                  onRefresh: () => _load(force: true),
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
