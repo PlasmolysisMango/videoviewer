@@ -13,6 +13,19 @@ import '../widgets/player_control_bar.dart';
 import '../widgets/player_gestures.dart';
 import '../widgets/subtitle_panel.dart';
 
+/// 播放默认设置（app 启动时预读，播放页同步读取）：
+/// 默认清晰度上限（px），0 = 不限（保持排序默认）。
+class PlayerDefaults {
+  static int maxHeight = 0;
+
+  static Future<void> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      maxHeight = prefs.getInt('default_max_height') ?? 0;
+    } catch (_) {}
+  }
+}
+
 /// 原生端 HLS 播放器（video_player / ExoPlayer 原生支持 HLS，可带 Referer 直连）。
 /// 支持清晰度切换（重初始化并保留进度）、倍速、手势（音量/亮度/进度）、横屏全屏。
 class VideoPlayerScreen extends StatefulWidget {
@@ -70,6 +83,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     super.initState();
     _userState = context.read<UserStateProvider>();
     _streams = VideoStream.sortStreams(widget.streams);
+    _current = _pickDefaultStream(_streams);
     _initController();
     SubtitleService.instance.addListener(_onSubtitleChanged);
     if (widget.movieNumber.isNotEmpty) {
@@ -85,6 +99,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     SubtitleService.instance.load(widget.movieNumber).then((ls) {
       if (mounted) setState(() => _subtitle = ls);
     });
+  }
+
+  /// 默认清晰度选择：设置"不限"时返回 0（保持排序默认——变体优先、
+  /// 同变体高清晰度）；设置了上限则在不超过上限的片源里取最高的，
+  /// 全部超上限时取最低档（最接近上限）。
+  int _pickDefaultStream(List<VideoStream> streams) {
+    final maxH = PlayerDefaults.maxHeight;
+    if (maxH <= 0 || streams.isEmpty) return 0;
+    var best = -1, bestH = -1;
+    var lowest = 0, lowestH = 1 << 30;
+    for (var i = 0; i < streams.length; i++) {
+      final h = streams[i].qualityHeight ?? 0;
+      if (h < lowestH) {
+        lowestH = h;
+        lowest = i;
+      }
+      if (h > 0 && h <= maxH && h > bestH) {
+        bestH = h;
+        best = i;
+      }
+    }
+    return best >= 0 ? best : lowest;
   }
 
   Future<void> _initController() async {

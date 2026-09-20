@@ -12,6 +12,7 @@ import 'providers/theme_provider.dart';
 import 'providers/user_state_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/video_player_screen.dart';
 import 'services/backend_launcher.dart';
 import 'services/logger.dart';
 import 'services/subtitle_service.dart';
@@ -84,6 +85,9 @@ Future<void> _runApp() async {
   // 字幕服务：绑定 API client 并恢复本地设置（字号/偏移/开关）。
   SubtitleService.bind(client);
   unawaited(SubtitleService.instance.loadSettings());
+
+  // 播放默认设置预读（默认清晰度上限），播放页同步读取。
+  unawaited(PlayerDefaults.load());
 
   runApp(MyApp(client: client));
 }

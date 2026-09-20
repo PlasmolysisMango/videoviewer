@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/client.dart';
 import '../services/logger.dart';
+import 'video_player_screen.dart' show PlayerDefaults;
 
 /// 设置页（侧边栏入口）：播放行为、网页版 Cookie、关于。
 class SettingsScreen extends StatefulWidget {
@@ -15,8 +16,10 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoWatched = false;
+  int _maxHeight = 0; // 默认清晰度上限（px），0 = 不限
 
   static const _autoWatchedKey = 'auto_mark_watched';
+  static const _maxHeightKey = 'default_max_height';
 
   @override
   void initState() {
@@ -29,6 +32,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() {
       _autoWatched = prefs.getBool(_autoWatchedKey) ?? false;
+      _maxHeight = prefs.getInt(_maxHeightKey) ?? 0;
     });
   }
 
@@ -40,6 +44,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoWatched = value;
     });
     AppLogger.info('Auto mark watched: $value');
+  }
+
+  /// 默认清晰度选项：不限保持现有行为；设置了上限则播放器
+  /// 在不超过上限的片源里取最高的（全部超限时取最低档）。
+  static const _maxHeightOptions = <(int, String)>[
+    (0, '不限（片源默认排序）'),
+    (2160, '4K (2160p)'),
+    (1080, '1080p'),
+    (720, '720p'),
+    (480, '480p'),
+    (360, '360p'),
+  ];
+
+  Future<void> _pickMaxHeight() async {
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (v, label) in _maxHeightOptions)
+              ListTile(
+                dense: true,
+                title: Text(label),
+                trailing: v == _maxHeight
+                    ? const Icon(Icons.check)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, v),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || picked == _maxHeight) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_maxHeightKey, picked);
+    // 同步内存值：下次进播放器立即生效，无需重启 app。
+    PlayerDefaults.maxHeight = picked;
+    if (!mounted) return;
+    setState(() => _maxHeight = picked);
+    AppLogger.info('Default max height: $picked');
   }
 
   Future<void> _importWebCookie() async {
@@ -98,6 +144,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('与 JavDB 账号同步标记（需已登录）'),
             value: _autoWatched,
             onChanged: _toggleAutoWatched,
+          ),
+          ListTile(
+            leading: const Icon(Icons.hd_outlined),
+            title: const Text('默认清晰度'),
+            subtitle: Text(_maxHeight == 0
+                ? '不限（使用片源默认排序）'
+                : '最高 $_maxHeight p'),
+            trailing: const Icon(Icons.arrow_drop_down),
+            onTap: _pickMaxHeight,
           ),
           const _SectionHeader('网页版'),
           ListTile(
