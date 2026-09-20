@@ -5,8 +5,10 @@ import android.util.Log
 /**
  * GoServerBridge 封装 gomobile 生成的 Go 库的反射调用，供 Activity 与前台服务共用。
  *
- * gomobile 库（libs/*.aar）提供 goserver.Goserver 入口；未打包 AAR 的开发环境
+ * gomobile 库（libs 目录下的 AAR）提供 goserver.Goserver 入口；未打包 AAR 的开发环境
  * 里 ClassNotFoundException 被吞掉并返回可容忍的结果，保证 App 可以不带后端启动。
+ * 注意：Kotlin 块注释支持嵌套，注释文本里不能出现形如 libs 斜杠星号的通配路径，
+ * 否则会被当成新的注释开头导致 Unclosed comment。
  */
 object GoServerBridge {
     private const val TAG = "VideoViewer"
