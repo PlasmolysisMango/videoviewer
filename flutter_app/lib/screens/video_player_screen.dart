@@ -285,12 +285,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     );
   }
 
-  /// 切换全屏：横屏全屏 + 隐藏状态栏
+  /// 切换全屏：横屏全屏 + 隐藏状态栏。
+  /// 切换时丢弃引擎缓存的画面 widget：普通/全屏两棵树的布局差异大，
+  /// 同一实例 reparent 会让新旧 State 短暂交错导致 Texture 黑帧。
   void _toggleFullscreen() {
     setState(() {
       _isFullscreen = !_isFullscreen;
       // 切换全屏时确保控制 UI 可见，方便用户退出全屏
       _controlsVisible = true;
+      _controller?.recreateView();
     });
     if (_isFullscreen) {
       SystemChrome.setPreferredOrientations([
