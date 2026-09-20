@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -346,14 +349,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   /// 切换全屏：横屏全屏 + 隐藏状态栏。
+  /// 旋转导致 Flutter surface 尺寸交换；暂停-恢复促使 ExoPlayer 立即
+  /// 重新输出一帧，避免旋转后 Texture 层停留黑帧。
   /// 画面 widget 的父链在普通/全屏两分支同构（见 _buildVideoArea），
-  /// 同一实例被直接复用而非重建——reparent/unmount 正是黑帧来源。
+  /// 同一实例被直接复用而非重建——reparent/unmount 也是黑帧来源。
   void _toggleFullscreen() {
     setState(() {
       _isFullscreen = !_isFullscreen;
       // 切换全屏时确保控制 UI 可见，方便用户退出全屏
       _controlsVisible = true;
     });
+    final c = _controller;
+    if (c != null && c.isPlaying) {
+      unawaited(c.pause().then((_) => c.play()));
+    }
     if (_isFullscreen) {
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
@@ -510,29 +519,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   /// 视频画面区：普通/全屏共用同一棵 widget 结构（Positioned.fill >
-  /// Center > FittedBox > SizedBox > 画面实例），仅 cover/contain 与
-  /// 尺寸值不同——切全屏时各层 slot 同构，画面实例（引擎缓存的同一
-  /// VideoPlayer/Video widget）被直接复用而非 unmount 重建，从根上
-  /// 消除 reparent 竞态导致的 Android Texture 黑帧。
+  /// ClipRect > OverflowBox > 画面实例），仅尺寸计算不同：普通 contain
+  /// 完整显示留黑边，全屏 cover 铺满裁切。画面 widget 的布局尺寸始终
+  /// 等于实际显示尺寸——不用 FittedBox/Transform 对 Texture 层做 GPU
+  /// 缩放（部分设备旋转后黑屏）；各层 slot 同构让切全屏时同一实例
+  /// 直接复用（reparent/unmount 同样是黑帧来源）。
   Widget _buildVideoArea(PlayerEngine? c, bool initialized) {
     if (!initialized || c == null) {
       return const Positioned.fill(child: SizedBox.shrink());
     }
-    final size = c.videoSize;
-    final hasSize = size.width > 0 && size.height > 0;
-    // 全屏 cover 铺满裁切；普通 contain 等价原 AspectRatio 效果。
-    // 分辨率未知时用 16:9 保底（与 aspectRatio getter 默认一致）。
     return Positioned.fill(
-      child: Center(
-        child: FittedBox(
-          fit: _isFullscreen ? BoxFit.cover : BoxFit.contain,
-          child: SizedBox(
-            width: hasSize ? size.width : 16,
-            height: hasSize ? size.height : 9,
+      child: LayoutBuilder(builder: (context, box) {
+        final maxW = box.maxWidth;
+        final maxH = box.maxHeight;
+        final ar = c.aspectRatio; // 宽/高，未知时引擎默认 16/9
+        double w, h;
+        if (!maxW.isFinite || !maxH.isFinite || ar <= 0) {
+          w = maxW.isFinite ? maxW : 16;
+          h = maxH.isFinite ? maxH : 9;
+        } else if (_isFullscreen) {
+          w = max(maxW, maxH * ar);
+          h = w / ar;
+        } else {
+          w = min(maxW, maxH * ar);
+          h = w / ar;
+        }
+        return ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.center,
+            minWidth: w,
+            maxWidth: w,
+            minHeight: h,
+            maxHeight: h,
             child: c.buildView(),
           ),
-        ),
-      ),
+        );
+      }),
     );
   }
 

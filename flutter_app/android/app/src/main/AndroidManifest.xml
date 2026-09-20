@@ -38,11 +38,6 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>
-        <!-- Impeller/Vulkan 在部分设备上方向旋转 + Texture 场景黑屏（
-             flutter/flutter 多例报告，且 widget 层修复无效），退回 Skia。 -->
-        <meta-data
-            android:name="io.flutter.embedding.android.EnableImpeller"
-            android:value="false"/>
 
         <service
             android:name=".GoServerService"
