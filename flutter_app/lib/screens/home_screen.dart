@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -42,23 +43,13 @@ class HomeScreen extends StatefulWidget {
 const _subMarkColor = Color(0xFF9AA3AD);
 
 class _HomeScreenState extends State<HomeScreen> {
-  /// TOP250 合集切面（与合集页一致）：热门推荐从其中随机取样。
-  static const _top250Facets = <(String?, String?)>[
-    (null, null), // 总榜
-    ('2026', null),
-    ('2025', null),
-    ('2024', null),
-    ('2023', null),
-    ('2022', null),
-    ('2021', null),
-    (null, 'censored'),
-    (null, 'uncensored'),
-    (null, 'western'),
-    (null, 'fc2'),
-  ];
+  /// 随机抽取的年度切面数：底池 = 总榜 + 2009-2026 随机 4 年，
+  /// 每次进入/刷新换一批年份，覆盖面随使用逐渐铺开。
+  static const _top250RandomYears = 4;
 
   late final JavDBClient _client;
   late final PageController _bannerController;
+  final _random = Random();
   List<Movie> _recMovies = [];
   bool _loading = true;
   String? _error;
@@ -150,7 +141,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 热门推荐池：TOP250 全部榜单切面（总榜/年度/类型）并集为底池，
+  /// 热门推荐池：TOP250 底池（总榜 + 2009-2026 随机 4 个年度切面）
   /// 叠加全部订阅（合集/题材/演员）的影片，合并去重洗牌，每次进入
   /// 首页/下拉刷新都不同。各源独立容错：单个失败只缩池；全空时
   /// 回退热播榜，保证首页总有内容。
@@ -158,13 +149,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final provider = context.read<SubscriptionProvider>();
     await provider.ensureLoaded();
     final requests = <Future<Map<String, dynamic>>>[
-      // 底池：TOP250 所有榜单切面（失败冷却中的切面本轮跳过）
-      for (final (year, vtype) in _top250Facets)
-        if (!_facetOnCooldown(year, vtype))
+      // 底池：总榜 + 随机 4 个年度切面（失败冷却中的年份本轮跳过）
+      if (!_top250OnCooldown('total'))
+        _safeMovies(
+          () => _client.getRanking('top250', limit: 20),
+          cooldownKey: 'top250:total',
+        ),
+      for (final y in _pickRandomYears())
+        if (!_top250OnCooldown(y))
           _safeMovies(
-            () => _client.getRanking('top250',
-                year: year, vtype: vtype, limit: 20),
-            cooldownKey: 'top250:$year:$vtype',
+            () => _client.getRanking('top250', year: y, limit: 20),
+            cooldownKey: 'top250:y$y',
           ),
       // 订阅合集
       for (final s in provider.byKind(kSubCollection))
@@ -261,9 +256,15 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 该 TOP250 切面是否处于失败冷却期。
-  bool _facetOnCooldown(String? year, String? vtype) {
-    final failedAt = _facetCooldown['top250:$year:$vtype'];
+  /// 从 2009-2026 随机抽 4 个年度切面（降序年份池）。
+  List<String> _pickRandomYears() {
+    final years = [for (var y = 2026; y >= 2009; y--) '$y']..shuffle(_random);
+    return years.take(_top250RandomYears).toList();
+  }
+
+  /// 该 TOP250 切面是否处于失败冷却期（key：total / y{year}）。
+  bool _top250OnCooldown(String facetKey) {
+    final failedAt = _facetCooldown['top250:$facetKey'];
     return failedAt != null &&
         DateTime.now().difference(failedAt) < _facetCooldownFor;
   }
