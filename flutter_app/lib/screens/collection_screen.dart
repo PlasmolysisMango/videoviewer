@@ -1,207 +1,349 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../api/client.dart';
 import '../providers/subscription_provider.dart';
+import '../services/backend_launcher.dart';
+import '../services/logger.dart';
 import 'list_detail_screen.dart';
 import 'list_search_screen.dart';
 
-/// 合集页（目录）：与题材页同构的二级结构——
-/// 一级展示"搜索社区合集"入口与已订阅合集列表，
-/// 点击合集进入二级影单详情页（ListDetailScreen）。
-/// TOP250 属于榜单（见榜单页），不再放在合集页。
-class CollectionScreen extends StatelessWidget {
+/// 合集页（题材式二级结构）：
+/// 一级用小框网格固定合集——顶部"我的合集"（已订阅），
+/// 其下"来自订阅题材"（按已订阅题材名搜索出的合集）与"发现合集"（随机关键词）；
+/// 点击小框进入二级影单详情页（ListDetailScreen），右上角搜索按钮搜索合集。
+/// 关键词池用繁体：JavDB 站内影单标题以繁体为主，简体命中率低。
+class CollectionScreen extends StatefulWidget {
   const CollectionScreen({super.key});
 
   @override
+  State<CollectionScreen> createState() => _CollectionScreenState();
+}
+
+/// 订阅标记统一用低饱和灰，与题材页书签一致。
+const _subMarkColor = Color(0xFF9AA3AD);
+
+/// 随机发现的关键词池（繁体，覆盖常见影单命名习惯）。
+const _discoverKeywords = [
+  '精選', '推薦', '合集', '收藏', '必看', '經典', '中文', '無碼',
+  '中字', '素人', '寫真', '盤點', '私藏', '稀有', '極品', '整理',
+];
+
+class _CollectionScreenState extends State<CollectionScreen> {
+  late final JavDBClient _client;
+  final _random = Random();
+
+  List<Map<String, dynamic>> _genreLists = []; // 来自订阅题材的推荐
+  List<Map<String, dynamic>> _discoverLists = []; // 随机关键词发现
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _client = JavDBClient(BackendLauncher.baseUrl);
+    context.read<SubscriptionProvider>().ensureLoaded().then((_) {
+      if (mounted) _load();
+    });
+  }
+
+  /// 并行聚合：订阅题材名搜索（各取前 3 条，最多 5 个题材）+
+  /// 随机关键词（2 个，各取前 8 条，随机页码 1-3）。单一来源失败静默跳过。
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final genres = context
+          .read<SubscriptionProvider>()
+          .byKind(kSubGenre)
+          .map((s) => (s['name'] as String?) ?? '')
+          .where((n) => n.trim().isNotEmpty)
+          .take(5)
+          .toList();
+      final pool = [..._discoverKeywords]..shuffle(_random);
+
+      final futures = <Future<List<Map<String, dynamic>>>>[
+        for (final g in genres) _searchSafe(g, 1),
+        _searchSafe(pool[0], _random.nextInt(3) + 1),
+        if (pool.length > 1) _searchSafe(pool[1], _random.nextInt(3) + 1),
+      ];
+      final batches = await Future.wait(futures);
+
+      // 全局去重：题材推荐与随机发现互不重复；各区块上限 12。
+      final seen = <String>{};
+      final genreLists = _dedupe(batches.sublist(0, genres.length), seen, 12);
+      final discoverLists =
+          _dedupe(batches.sublist(genres.length), seen, 12);
+
+      if (!mounted) return;
+      setState(() {
+        _genreLists = genreLists;
+        _discoverLists = discoverLists;
+        _loading = false;
+      });
+      AppLogger.info(
+          'Collection page loaded: ${genreLists.length} genre + ${discoverLists.length} discover');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+      AppLogger.error('Failed to load collection page', e);
+    }
+  }
+
+  /// 搜索合集（容错：失败返回空列表，不阻塞其他来源）。
+  Future<List<Map<String, dynamic>>> _searchSafe(String q, int page) async {
+    try {
+      final lists =
+          await _client.searchLists(q, page: page).timeout(const Duration(seconds: 12));
+      return lists;
+    } catch (e) {
+      AppLogger.warning('List search "$q" failed: $e');
+      return const [];
+    }
+  }
+
+  /// 按批次顺序去重取前 cap 条（id 为空或已见过的跳过）。
+  List<Map<String, dynamic>> _dedupe(
+      Iterable<List<Map<String, dynamic>>> batches, Set<String> seen, int cap) {
+    final out = <Map<String, dynamic>>[];
+    for (final batch in batches) {
+      for (final l in batch) {
+        final id = (l['id'] as String?) ?? '';
+        if (id.isEmpty || seen.contains(id)) continue;
+        seen.add(id);
+        out.add(l);
+        if (out.length >= cap) return out;
+      }
+    }
+    return out;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final subs = context.watch<SubscriptionProvider>().byKind(kSubCollection);
+    final subs = context.watch<SubscriptionProvider>();
+    final subscribed = subs.byKind(kSubCollection);
+    final genres = subs.byKind(kSubGenre);
+
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.collections_bookmark,
-                color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: 8),
-            const Text('合集'),
-          ],
-        ),
+        title: const Text('合集'),
         actions: [
+          // 右上角搜索：进入合集搜索页
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: '搜索合集',
-            onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const ListSearchScreen())),
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: '刷新订阅',
-            onPressed: () =>
-                context.read<SubscriptionProvider>().load(),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ListSearchScreen()),
+            ),
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-        children: [
-          // 搜索社区合集入口（一级 → ListSearchScreen 可继续进二级详情）
-          _SearchEntry(onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const ListSearchScreen()),
-          )),
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
-            child: Text('已订阅合集 (${subs.length})',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleSmall
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-          ),
-          if (subs.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
-              child: Center(
-                child: Text(
-                  '搜索并订阅社区合集后展示在这里',
-                  style: TextStyle(color: Theme.of(context).hintColor),
-                ),
-              ),
-            )
-          else
-            for (final s in subs) _SubscribedListCard(sub: s),
-        ],
-      ),
-    );
-  }
-}
-
-/// 搜索入口卡：与订阅卡同风格，点击进合集搜索页。
-class _SearchEntry extends StatelessWidget {
-  final VoidCallback onTap;
-
-  const _SearchEntry({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardColor,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Theme.of(context).dividerColor),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(Icons.search,
-                  color: Theme.of(context).colorScheme.primary, size: 24),
-            ),
-            const SizedBox(width: 12),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('搜索社区合集',
-                      style:
-                          TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-                  SizedBox(height: 2),
-                  Text('关键词搜索 JavDB 影单',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right, color: Theme.of(context).hintColor),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 已订阅合集卡片（灰色图钉标记订阅项）：点击进二级影单详情页。
-class _SubscribedListCard extends StatelessWidget {
-  final Map<String, dynamic> sub;
-
-  const _SubscribedListCard({required this.sub});
-
-  @override
-  Widget build(BuildContext context) {
-    final id = (sub['id'] as String?) ?? '';
-    final name = (sub['name'] as String?) ?? id;
-    final count = (sub['movies_count'] as num?)?.toInt() ?? 0;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Stack(
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(14),
-            onTap: () {
-              if (id.isEmpty) return;
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ListDetailScreen(
-                      listId: id, listName: name, moviesCount: count),
-                ),
-              );
-            },
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: Theme.of(context).cardColor,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Theme.of(context).dividerColor),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 38,
-                    height: 38,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFD54F).withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.collections_bookmark,
-                        color: Color(0xFFFFD54F), size: 20),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('加载失败: $_error',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                              fontSize: 12)),
+                      const SizedBox(height: 12),
+                      OutlinedButton(onPressed: _load, child: const Text('重试')),
+                    ],
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(name,
+                )
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                    children: [
+                      _sectionTitle('我的合集 (${subscribed.length})'),
+                      if (subscribed.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Text('搜索并订阅合集后固定在这里',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).hintColor)),
+                        )
+                      else
+                        _listGrid(subscribed),
+                      if (genres.isNotEmpty && _genreLists.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        _sectionTitle('来自你的订阅题材'),
+                        _listGrid(_genreLists),
+                      ],
+                      if (_discoverLists.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        _sectionTitle('发现合集'),
+                        _listGrid(_discoverLists),
+                        Center(
+                          child: Text('下拉刷新换一批',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: Theme.of(context).hintColor)),
+                        ),
+                      ],
+                      if (subscribed.isEmpty &&
+                          _genreLists.isEmpty &&
+                          _discoverLists.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 32),
+                          child: Center(
+                            child: Text('暂无合集数据，下拉重试或搜索合集',
+                                style: TextStyle(
+                                    color: Theme.of(context).hintColor)),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+    );
+  }
+
+  Widget _sectionTitle(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 8, 4, 8),
+        child: Text(text,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+      );
+
+  /// 合集小框网格：与题材页卡片同规格（圆角 12、居中名称、右上角订阅书签）。
+  Widget _listGrid(List<Map<String, dynamic>> lists) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 168,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 3.0,
+      ),
+      itemCount: lists.length,
+      itemBuilder: (context, i) =>
+          _ListCard(list: lists[i], client: _client),
+    );
+  }
+}
+
+/// 合集小框卡片：点击进二级影单详情页；右上角书签切换订阅（低饱和灰）。
+class _ListCard extends StatelessWidget {
+  final Map<String, dynamic> list;
+  final JavDBClient client;
+
+  const _ListCard({required this.list, required this.client});
+
+  @override
+  Widget build(BuildContext context) {
+    final subs = context.watch<SubscriptionProvider>();
+    final id = (list['id'] as String?) ?? '';
+    final name = (list['name'] as String?) ?? id;
+    final count = (list['movies_count'] as num?)?.toInt() ?? 0;
+    final subscribed = id.isNotEmpty && subs.isSubscribed(kSubCollection, id);
+
+    return Stack(
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            if (id.isEmpty) return;
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ListDetailScreen(
+                    listId: id, listName: name, moviesCount: count),
+              ),
+            );
+          },
+          child: Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).cardColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Theme.of(context).dividerColor),
+            ),
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 14, fontWeight: FontWeight.w600)),
-                  ),
-                  Text('$count 部',
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(context).hintColor)),
-                  const SizedBox(width: 4),
-                  Icon(Icons.chevron_right,
-                      color: Theme.of(context).hintColor),
-                ],
+                        style: const TextStyle(fontSize: 13)),
+                    if (count > 0)
+                      Text('$count 部',
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(context).hintColor)),
+                  ],
+                ),
               ),
             ),
           ),
-          // 图钉：标记订阅项（灰色低饱和，不做醒目强调）
-          const Positioned(
-            top: 2,
-            right: 4,
-            child: Icon(Icons.push_pin, size: 14, color: Color(0xFF9AA3AD)),
+        ),
+        // 右上角订阅书签：与题材卡一致的交互
+        Positioned(
+          top: 0,
+          right: 0,
+          child: InkWell(
+            borderRadius: const BorderRadius.only(
+              topRight: Radius.circular(12),
+              bottomLeft: Radius.circular(12),
+            ),
+            onTap: () => _toggleSubscribe(context, id, name, count,
+                subscribed: subscribed),
+            child: Padding(
+              padding: const EdgeInsets.all(5),
+              child: Icon(
+                subscribed
+                    ? Icons.bookmark_added
+                    : Icons.bookmark_add_outlined,
+                size: 16,
+                color: subscribed
+                    ? _subMarkColor
+                    : Theme.of(context).hintColor,
+              ),
+            ),
           ),
-        ],
-      ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _toggleSubscribe(BuildContext context, String id, String name,
+      int count, {required bool subscribed}) async {
+    if (id.isEmpty) return;
+    final subs = context.read<SubscriptionProvider>();
+    try {
+      if (subscribed) {
+        await subs.unsubscribe(kSubCollection, id);
+        if (context.mounted) _toast(context, '已取消订阅');
+      } else {
+        await subs.subscribeCollection(id, name, moviesCount: count);
+        if (context.mounted) _toast(context, '已订阅，固定在“我的合集”');
+      }
+    } catch (e) {
+      AppLogger.error('Failed to toggle collection subscription', e);
+      if (context.mounted) _toast(context, '操作失败: $e', error: true);
+    }
+  }
+
+  void _toast(BuildContext context, String msg, {bool error = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: error ? Colors.red : null),
     );
   }
 }
