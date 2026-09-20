@@ -53,6 +53,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   String? _error;
   bool _isFullscreen = false;
   bool _controlsVisible = true; // 单击视频区切换控制 UI（AppBar/控制栏）
+  bool _subtitlePanelOpen = false; // 字幕设置右侧侧边栏（画面仍可见可对照调整）
 
   // tick 节流：ExoPlayer/mpv 的事件频率远高于进度条需要，全页 setState
   // 过频会加重渲染压力（配合引擎层 view 实例缓存，共同消除播放中闪黑）。
@@ -214,7 +215,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     c.isPlaying ? c.pause() : c.play();
   }
 
-  void _toggleControls() => setState(() => _controlsVisible = !_controlsVisible);
+  void _toggleControls() => setState(() {
+        _controlsVisible = !_controlsVisible;
+        // 收起控制栏时同步收起字幕侧边栏
+        if (!_controlsVisible) _subtitlePanelOpen = false;
+      });
 
   void _seekRelative(double seconds) {
     final c = _controller;
@@ -239,9 +244,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     _controller?.setVolume(v);
   }
 
-  /// 字幕设置：弹出播放页叠加面板（开关/字号/颜色/时间轴就地调整，实时生效）。
-  void _openSubtitleSettings() {
-    showSubtitlePanel(context);
+  /// 字幕设置：播放画面右侧滑入侧边栏，左侧画面仍可见，调整实时对照。
+  void _toggleSubtitlePanel() {
+    setState(() => _subtitlePanelOpen = !_subtitlePanelOpen);
+  }
+
+  /// 字幕侧边栏（两个布局分支共用）：关闭时滑出屏幕右侧。
+  Widget _buildSubtitleSidePanel() {
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      right: _subtitlePanelOpen ? 0 : -270,
+      top: 0,
+      bottom: 0,
+      width: 260,
+      child: SubtitleSidePanel(
+        movieNumber: widget.movieNumber,
+        currentSubtitleLabel: _subtitle == null
+            ? '未加载'
+            : '${_subtitle!.langLabel} · ${_subtitle!.source}',
+        onClose: () => setState(() => _subtitlePanelOpen = false),
+      ),
+    );
   }
 
   /// 字幕 overlay：白字黑边 + 半透明底，随播放进度/偏移/字号实时变化。
@@ -368,10 +392,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                   onRateChanged: _setRate,
                   isFullscreen: _isFullscreen,
                   onToggleFullscreen: _toggleFullscreen,
-                  onOpenSubtitleSettings: _openSubtitleSettings,
+                  onOpenSubtitleSettings: _toggleSubtitlePanel,
                   subtitleOn: _subtitle != null && SubtitleService.instance.enabled,
                 ),
               ),
+            // 字幕设置侧边栏（关闭时滑出屏幕右侧）
+            _buildSubtitleSidePanel(),
           ],
         ),
       );
@@ -423,6 +449,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                     child: const SizedBox.expand(),
                   ),
                 ),
+                // 字幕设置侧边栏（关闭时滑出屏幕右侧）
+                _buildSubtitleSidePanel(),
               ],
             ),
           ),
@@ -440,7 +468,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               onRateChanged: _setRate,
               isFullscreen: _isFullscreen,
               onToggleFullscreen: _toggleFullscreen,
-              onOpenSubtitleSettings: _openSubtitleSettings,
+              onOpenSubtitleSettings: _toggleSubtitlePanel,
               subtitleOn: _subtitle != null && SubtitleService.instance.enabled,
             ),
         ],
