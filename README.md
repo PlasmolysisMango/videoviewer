@@ -1,56 +1,142 @@
-# javdb — JavDB 的 Go 客户端（搜索 / 榜单 / 详情 / 磁链 / 演员）
+# VideoViewer — JavDB 跨平台客户端（Go 后端 + Flutter 前端）
 
-`pkg/javdb` 是一个可直接引用的库：一套稳定的 Go 接口，同时驱动 **JavDB 移动端 JSON API** 与
-**javdb.com 及其镜像的 HTML**，哪个能回答就用哪个。附带 `cmd/javdbcli` 演示程序，
-每条子命令对应一个 `Client` 方法，输出即文档。
+一个视频搜索 / 榜单 / 详情 / 磁链 / 订阅 / 播放 / 下载应用，覆盖 **Android、Windows、Web**：
 
-- 零业务依赖：只用标准库 + `goquery`
-- 全部离线可测：111 个测试、`-race` 通过，不打真实网络
-- 真实端点已逐个探测并订正（见 [§4](#4-真实端点可用性2026-09-14-探测)）
-
----
-
-## 1. 两个参考项目给了什么
-
-### [TongWu/JAVDB_AutoSpider](https://github.com/TongWu/JAVDB_AutoSpider)
-
-Python + requests 的定时抓取脚本：**必须先拿浏览器登录后的 `_janus_session_` cookie**，
-再抓 javdb.com 的 HTML，解析卡片/详情页，把番号、标题、预览图、磁链入库。
-
-| 值得继承 | 本项目做法 |
-|---|---|
-| 列表卡片字段抽取（番号/时长/评分/磁链数/"可播放""含字幕"标记） | `parse_list.go` 逐选择器实现，并有 fixture 测试 |
-| 详情页 label/value 表 + 磁链表 | `parse_detail.go`，中英文 label 都映射到同一结构体 |
-| 主站常被 Cloudflare 挡住，靠数字镜像域名 | `DefaultSites` 三个域 + `transport` 逐站点故障转移 |
-| 需要限速，否则 429 / 封 IP | `WithRateLimit`（令牌桶，按后端独立计数） |
-| **问题**：只有 HTML 一条腿；结构体散落 dict；无分页/错误语义；无缓存 | 见 §2 |
-
-### [JavdBviewed/JavdBviewed](https://github.com/JavdBviewed/JavdBviewed)
-
-浏览器扩展。除 DOM 注入外，最重要的发现是**移动端 JSON API**（`https://jdforrepam.com/api`）：
-返回干净 JSON、不吃 Cloudflare，代价是每个请求都要带一个 `jdsignature` 头。
-
-逆向出的签名方案（300 秒有效）：
-
-```
-jdsignature = "{unix}.{clientID}.{md5(unix + salt)}"
-clientID    = lpw6vgqzsp
-salt        = 71cf27bb…a199e7d5a…（128 位 hex，来自 app 二进制）
-```
-
-本项目实现为 [`Signature(time.Time)`](pkg/javdb/signature.go)（导出，便于外部自行签发），
-并在 `signatureCache` 里按 TTL 复用，避免每次请求都重算。
-
-| 值得继承 | 本项目做法 |
-|---|---|
-| `jdsignature` + `Dart/3.5 (dart:io)` UA | `transport.decorate`，`api` 后端全部请求自动附加 |
-| JSON 端点清单（搜索/榜单/详情/磁链/评论/演员/标签/登录） | `api.go`，端点存在性已实测订正 |
-| 图片 CDN 前缀（`…/rhe951l4q/…` 会随站点变化） | `FixImageURL` 统一归一到 `c0.jdbstatic.com` |
-| **问题**：面向 UI 注入，没有数据模型；端点靠试，部分参数其实无效 | §4 给出实测结论 |
+- **Go 后端**（`cmd/javdbserver`）：本地 HTTP 服务，聚合 JavDB 数据与 AV 播放源，Android 上以
+  gomobile AAR 内嵌进应用进程并以前台服务保活
+- **Flutter 前端**（`flutter_app`）：Material 3 界面，移动端与桌面端共用一套代码
+- **两个可复用 Go 库**：[`pkg/javdb`](#5-pkgjavdb--javdb-的-go-客户端库)（双后端客户端，可直接引用）、
+  [`pkg/av`](#52-pkgav--视频播放与下载)（MissAV / Jable / HohoJ 播放与下载）
+- **零业务依赖**：javdb 库只用标准库 + `goquery`；全部离线可测（`-race` 通过，不打真实网络）
 
 ---
 
-## 2. 实现结构
+## 1. 架构总览
+
+```
+┌──────────────────────┐      HTTP/JSON      ┌───────────────────────────┐
+│    Flutter 前端      │ ◄─────────────────► │   Go HTTP Server          │
+│  Android/Windows/Web │    127.0.0.1:18888  │   (cmd/javdbserver)       │
+└──────────────────────┘                     └────────────┬──────────────┘
+                                     ┌────────────────────┼─────────────────────┐
+                                     ▼                    ▼                     ▼
+                          ┌──────────────────┐  ┌──────────────────┐  ┌────────────────┐
+                          │    pkg/javdb     │  │     pkg/av       │  │   下载目录     │
+                          │  榜单/搜索/磁链  │  │  MissAV/Jable/   │  │   (-dl-dir)    │
+                          │  演员/评论/订阅  │  │  HohoJ 播放源    │  │                │
+                          └────────┬─────────┘  └──────────────────┘  └────────────────┘
+                                   │
+                    api（移动端 JSON，优先） + web（HTML 镜像，兜底）
+```
+
+各平台的后端承载方式：
+
+| 平台 | 后端形态 | 生命周期 |
+|---|---|---|
+| Android | gomobile AAR 内嵌于应用进程 | `GoServerService` 前台服务（`specialUse`）承载，START_STICKY 自动恢复；请求层另有连接失败自愈重启 |
+| Windows | `javdbserver.exe` 独立进程 | `-parent` 看门狗：主应用退出后 server 自杀，不留残留进程 |
+| Web | 不内嵌 | 前端直连已部署的 server（`flutter run -d chrome` 需自行保证后端可达） |
+
+---
+
+## 2. 功能一览
+
+- **搜索**：关键词 / 番号 / 演员近似搜索（简体 → 繁体自动映射）、筛选与排序
+- **详情**：影片信息、磁链列表（中字 / 无码破解优先排序）、相似推荐（三维度并行聚合）、
+  评论按需分页（首屏一页 + 加载更多）
+- **榜单**：热播榜、分类排行榜（HTML）、TOP250（需 App 登录）、演员榜（有码 / 无码 / 欧美 / 素人四类）
+- **演员页**：档案 + 作品列表，排序透传上游服务端（最新 / 最旧 / 最高分 / 最多播放）
+- **订阅**：合集 / 题材 / 演员，本地持久化，开机自动刷新
+- **历史记录**：播放位置记忆，续播
+- **AV 播放**：MissAV / Jable / HohoJ 三源级联；变体（无码 / 中字 / 普通）探测与优先级；
+  全部源不可用时明确提示「无播放源」；Jable 的 Cloudflare 凭据可注入
+- **下载**：按 `-dl-dir` 落盘
+- **加载优化**：首页推荐池与影片详情 SWR 缓存、图片磁盘缓存、画廊翻页预加载、
+  TOP250 切面失败冷却
+
+---
+
+## 3. 快速开始
+
+### 3.1 后端（源码运行）
+
+```bash
+go build -o javdbserver ./cmd/javdbserver
+./javdbserver -addr 127.0.0.1:18888 -proxy http://127.0.0.1:7890
+```
+
+### 3.2 前端（本地开发）
+
+```bash
+cd flutter_app
+flutter pub get
+flutter run -d windows   # 或 -d <android-device>
+```
+
+前端启动时会自动拉起（或连接）本机后端；Web 平台需自行保证后端可达。
+
+### 3.3 安装包（GitHub Actions）
+
+推送 / 手动触发 `Build Release` workflow 自动产出并发布：
+
+- **Windows**：应用 + `javdbserver.exe` 打包成一个 zip（artifact `videoviewer-windows`）
+- **Android**：arm64-v8a APK（gomobile AAR 内嵌，签名后随 Release 发布）
+
+### 3.4 登录与凭据
+
+| 凭据 | 解锁能力 | 获取方式 |
+|---|---|---|
+| App JWT | TOP250、个人列表、演员榜 | 应用内登录（`POST /api/login`），或 `JAVDB_TOKEN` |
+| Web cookie | 分类排行榜、题材浏览等登录墙页面 | 应用内导入（`POST /api/web-cookie`），或 `JAVDB_COOKIE` |
+
+两个值都是机密：别写日志、别提交。桌面端持久化在 `~/.videoviewer/`
+（`session.json`、`subscriptions.json`），Android 上迁移到应用私有目录（scoped storage 不可写共享存储）。
+
+---
+
+## 4. 服务端配置与 API
+
+`javdbserver` 参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `-addr` | `:18888` | HTTP 监听地址 |
+| `-api-base` | JavDB App API 地址 | API base URL |
+| `-token` | `$JAVDB_TOKEN` | App JWT（TOP250 / 个人列表） |
+| `-cookie` | `$JAVDB_COOKIE` | Web 会话 cookie（登录墙页面） |
+| `-dl-dir` | `$JAVDB_DL_DIR` | 下载目录（不设则禁用下载） |
+| `-proxy` | `$HTTP_PROXY` | HTTP / SOCKS5 代理 |
+| `-parent` | `0` | 父进程 PID，父进程退出后自杀（Windows 启动器使用） |
+
+HTTP API 一览（全部 JSON）：
+
+| 分组 | 端点 | 说明 |
+|---|---|---|
+| 通用 | `GET /health` | 健康检查 |
+| 认证 | `POST /api/login`、`POST /api/web-cookie` | 登录 / 导入 web cookie |
+| JavDB | `GET /api/search` | 搜索（`?q=&page=&limit=&category=&sort=`…） |
+| | `GET /api/movie/:id`、`/api/magnets/:id`、`/api/reviews/:id?page=&sort=` | 详情 / 磁链 / 评论（按需分页） |
+| | `GET /api/similar/:id` | 相似推荐（聚合） |
+| | `GET /api/ranking/:kind` | 榜单：`playback` / `movies` / `top250` / `actors`（`?category=&period=&limit=`） |
+| | `GET /api/actor/:id`、`/api/actor-movies/:id` | 演员档案 / 作品（服务端排序透传） |
+| | `GET /api/series-movies/:id`、`/api/lists/search`、`/api/lists/:id` | 系列作品 / 收录列表 |
+| | `GET /api/tags`、`/api/genre` | 标签分组 / 题材浏览（需 web cookie） |
+| 订阅 | `GET|POST /api/subscriptions`、`DELETE /api/subscriptions/:kind/:id` | 订阅管理 |
+| AV | `GET /api/av/sources`、`/api/av/search`、`/api/av/detail/:code` | 源列表 / 搜索 / 详情 |
+| | `GET /api/av/probe/:code`、`/api/av/resolve/:code`、`/api/av/play/:code` | 变体探测 / 全流解析 / 最优流 |
+| | `POST /api/av/download/:code`、`POST /api/av/cf-cookie` | 下载 / 注入 Cloudflare 凭据 |
+| 媒体 | `GET /api/img`、`GET /api/hls/playlist`、`GET /api/hls/segment` | 图片与 HLS 代理（Web 播放用） |
+
+---
+
+## 5. `pkg/javdb` — JavDB 的 Go 客户端库
+
+一套稳定的 Go 接口同时驱动 **JavDB 移动端 JSON API** 与 **javdb.com 及其镜像的 HTML**，
+哪个能回答就用哪个。附带 `cmd/javdbcli` 演示程序，每条子命令对应一个 `Client` 方法，输出即文档。
+
+移动端 JSON API（`https://jdforrepam.com/api`）返回干净 JSON、不吃 Cloudflare，代价是每个请求
+都要带 `jdsignature` 头（300 秒有效）：`"{unix}.{clientID}.{md5(unix + salt)}"`。本项目实现为
+导出的 [`Signature(time.Time)`](pkg/javdb/signature.go)，并在 TTL 内复用签发结果。
 
 ```
                         ┌──────────────────────────────┐
@@ -77,17 +163,12 @@ salt        = 71cf27bb…a199e7d5a…（128 位 hex，来自 app 二进制）
 
 **错误语义**（`errors.go`）：`ErrAuthRequired`、`ErrNotFound`、`ErrChallenge`、`ErrRateLimited`、
 `ErrMaintenance`、`ErrUnsupported`、`ErrEmptyResult`、`ErrNoSite`、`ErrInvalidQuery`。
-所有后端都失败时返回 `*MultiError`（实现 `Unwrap() []error`，`errors.Is` 可同时命中多个哨兵）；
-失败方式一致时折叠成单个哨兵，日志更干净。页面级 hostile 响应（登录墙 / CF Interstitial / 维护页）
-由 `transport.classify` 统一识别，登录墙**不重试**，CF/429 **重试并换站**。
+所有后端都失败时返回 `*MultiError`；登录墙**不重试**，CF/429 **重试并换站**。
 
-**缓存**（`cache.go`）：按查询语义生成 key（搜索含 scope/分类/筛选/排序/年份/`FromRecent`，
-榜单含 kind/period/category/filter/slice/start_rank/page/limit），TTL 内命中即返回；
-同一 key 的并发请求 singleflight 合并为一次外呼；**只缓存成功结果**。
+**缓存**（`cache.go`）：按查询语义生成 key，TTL 内命中即返回；同一 key 的并发请求
+singleflight 合并为一次外呼；**只缓存成功结果**。
 
----
-
-## 3. 快速开始
+### 5.1 Go 用法示例
 
 ```go
 ctx := context.Background()
@@ -105,20 +186,16 @@ res, err := c.SearchMovies(ctx, "ssis",
     javdb.WithSubtitle(),
     javdb.WithPage(1, 20),
 )
-for _, m := range res.Movies {
-    fmt.Println(m.Code, m.Title, m.ReleaseDate, m.Score, m.MagnetsCount)
-}
 
 // 榜单
-hot, _   := c.Playback(ctx, javdb.PeriodWeekly, javdb.Page{Limit: 20})   // 热播榜
-board, _ := c.CategoryRanking(ctx, javdb.PeriodDaily, javdb.CategoryUncensored, javdb.Page{}) // 分類排行榜（HTML）
-top, _   := c.Top250(ctx, javdb.Top250OfYear(2025), javdb.Page{Page: 1, Limit: 25})           // 需登录
-actors, _:= c.ActorRanking(ctx, javdb.CategoryCensored, javdb.Page{Page: 2, Limit: 10})       // 演員排行
+hot, _   := c.Playback(ctx, javdb.PeriodWeekly, javdb.Page{Limit: 20})
+board, _ := c.CategoryRanking(ctx, javdb.PeriodDaily, javdb.CategoryUncensored, javdb.Page{})
+top, _   := c.Top250(ctx, javdb.Top250OfYear(2025), javdb.Page{Page: 1, Limit: 25}) // 需登录
+actors, _:= c.ActorRanking(ctx, javdb.CategoryCensored, javdb.Page{Page: 2, Limit: 10})
 
 // 详情 / 磁链：番号会自动解析成 id
 d, _  := c.Movie(ctx, "SSIS-001")
 best, _ := c.BestMagnet(ctx, "SSIS-001")   // 优先含字幕，其次体积最大
-fmt.Println(d.URL(c.Site()), best.Name, best.Hash, best.SizeText)
 
 // 演员：给名字或 id 都行
 a, _ := c.Actor(ctx, "楓花戀")
@@ -140,9 +217,38 @@ case errors.Is(err, javdb.ErrNotFound),
 }
 ```
 
+### 5.2 `pkg/av` — 视频播放与下载
+
+- **MissAV**：主源。域回退链（`.ai` / `.com` / 数字镜像）应对 Cloudflare；slug 尾部数字补零归一；
+  变体（无码 / 中字 / 普通）聚合并按优先级排序
+- **Jable**：需有效 `cf_clearance`（`POST /api/av/cf-cookie` 注入后自动携带）
+- **HohoJ**：`resolve` 直接给出 m3u8 / mp4 直链；番号索引为未补零形式，查找按
+  「原样优先、补零兜底」两段搜索并做前导零等价匹配
+- **级联**：`play` / `resolve` / `probe` 逐源尝试，某源失败自动切换下一个；
+  指定 `?source=` 时只试该源；全部不可用返回明确错误（前端显示「无播放源」）
+
+### 5.3 演示 CLI
+
+```
+javdbcli search     <keyword>   [-sub] [-scope actor] [-category censored] [-sort newest]
+                                [-filter c|p|m|s|nowatched] [-recent] [-year 2025] [-tag 4:15]
+javdbcli ranking    playback|movies|top250|actors|fanza   [-period weekly] [-year 2025]
+javdbcli movie      <id|code>   [-magnets]
+javdbcli magnets    <id|code>
+javdbcli browse     -category|-code|-maker|-series|-publisher|-director|-actor|-tag
+javdbcli actor      <name|id>   [-movies]
+javdbcli tags       -category censored
+javdbcli reviews    <id|code>   [-sort latest]
+javdbcli login      -user a@b   [-pass-file -] [-verify]
+```
+
+- flag 可写在位置参数前后任意位置；`-v` 打印故障转移与重试决策，`-json` 输出结构体
+- 凭据 flag 均有环境变量默认值：`-cookie`←`JAVDB_COOKIE`，`-token`←`JAVDB_TOKEN`，`-proxy`←`JAVDB_PROXY`
+- 退出码分级：`0` 成功，`3` 未命中/空结果，`4` 需要登录，`1` 其他
+
 ---
 
-## 4. 真实端点可用性（2026-09-14 探测）
+## 6. 真实端点可用性（2026-09-14 探测）
 
 以下结论均来自对线上 App API / 镜像的直连请求，已写进对应代码注释。
 
@@ -159,74 +265,15 @@ case errors.Is(err, javdb.ErrNotFound),
 | `GET /v1/tags` | 200，但 `type` **只吃数字**：`type=censored` → **500** | ✅ 标签分组 |
 | `GET /v1/lists/related` | 200 | ✅ 相关收录列表 |
 | `POST /v1/sessions` | 参数为 `username`/`password` + `device_uuid` 等（换成 `email`/`login` 会报 `參數不能爲空: username`） | ✅ App 登录 |
-| 镜像 `/search`、`/rankings/*`、`/tags`… | 200 但内容是登录墙（`<title> 登入 \| JavDB 成人影片數據庫 </title>`） | ⚠ 需 cookie |
+| 镜像 `/search`、`/rankings/*`、`/tags`… | 200 但内容是登录墙 | ⚠ 需 cookie |
 | 镜像 `/users/sign_in` | **404**：镜像不提供登录入口 | ❌ 只能导入主站 cookie |
-| `javdb.com` | 本沙箱三次 20s 超时 | — |
+
+补充实测（2026-09-18）：`/v1/movies/tags` 支持服务端排序 `sort_by=release`（asc/desc 均生效）、
+`score`（方向固定 desc）、`hit`；其余取值被忽略回默认。演员榜为**当前时期**口径的官方热门榜，
+榜单行不带任何热度数字字段，本地只透传顺序。
 
 图片 CDN 实测为 `https://tp.spfcas.com/rhe951l4q/…`，`FixImageURL` 会把任意镜像前缀归一到
 `https://c0.jdbstatic.com/…`，避免把「抓取站点」和「图片站点」耦合在一起。
-
----
-
-## 5. 登录态：两条独立的路
-
-| 数据 | 需要的凭据 | 取得方式 |
-|---|---|---|
-| App JSON（TOP250、个人列表） | App JWT | `Client.Login(ctx, Credentials{Username,Password})`，或导入 `WithAppToken` |
-| HTML（分类排行榜、`browse`、标签、演员作品页） | 会话 cookie | 只能导入：`WithCookie("_janus_session_=…")` |
-
-```bash
-# App 侧：拿到 JWT（密码走 stdin，不进 shell history）
-printf '%s' "$JAVDB_PASSWORD" | javdbcli login -user you@example.com -pass-file -
-# 输出 export JAVDB_TOKEN='…'，随后可直接用
-export JAVDB_TOKEN='…'
-javdbcli ranking top250 -limit 20
-
-# HTML 侧：浏览器已登录 → DevTools → Network → 任一文档请求 → 复制整行 cookie
-#（注意 JavDB 的会话 cookie 是 HttpOnly，document.cookie 里看不到）
-export JAVDB_COOKIE='_janus_session_=…; …'
-javdbcli ranking movies -category uncensored -period daily
-javdbcli browse -code SSIS
-```
-
-`Client.Login` 会遍历所有实现 `Authenticator` 的后端；`Session()` 可读回当前生效的
-cookie / JWT（两个值都是机密，别写日志、别提交）。仓库已用 `.gitignore` 屏蔽
-`account.txt`、`*.token`、`.env`。
-
----
-
-## 6. 演示 CLI
-
-```
-javdbcli search     <keyword>   [-sub] [-scope actor] [-category censored] [-sort newest]
-                                [-filter c|p|m|s|nowatched] [-recent] [-year 2025] [-tag 4:15]
-javdbcli ranking    playback|movies|top250|actors|fanza   [-period weekly] [-year 2025]
-javdbcli movie      <id|code>   [-magnets]
-javdbcli magnets    <id|code>
-javdbcli browse     -category|-code|-maker|-series|-publisher|-director|-actor|-tag
-javdbcli actor      <name|id>   [-movies]
-javdbcli tags       -category censored
-javdbcli reviews    <id|code>   [-sort latest]
-javdbcli login      -user a@b   [-pass-file -] [-verify]
-```
-
-标签筛选（`-tag 4:15`，即「主題=巨乳」）只在 `-category movies` 这一条路径上有落点：
-App 的 `/v2/search` 没有 tag 参数，HTML 只支持站内分类列表，因此其它组合会被显式拒绝
-（`ErrUnsupported`）而不是悄悄返回一份没过滤的结果。
-
-- flag 可以写在位置参数**前后任意位置**（`parseArgs` 会重排），`-v` 打印故障转移与重试决策，`-json` 输出结构体
-- 凭据 flag 均有环境变量默认值：`-cookie`←`JAVDB_COOKIE`，`-token`←`JAVDB_TOKEN`，`-proxy`←`JAVDB_PROXY`
-- 退出码分级：`0` 成功，`3` 未命中/空结果，`4` 需要登录，`1` 其他；`explain()` 会为哨兵错误附上可执行建议
-
-已实测通过的匿名冒烟：
-
-```
-$ javdbcli search ssis -limit 3                      # 经 api
-$ javdbcli ranking playback -period weekly -limit 3   # 经 api，rank 1..3
-$ javdbcli ranking actors -limit 5 -page 2            # 经 api，rank 6..10（后端本地切窗）
-$ javdbcli movie SSIS-001 -magnets                    # 番号→id→详情+磁链
-$ javdbcli tags -category censored                     # 经 api（type 必须是数字）
-```
 
 ---
 
@@ -237,14 +284,13 @@ gofmt -l .
 go vet ./...
 go test ./...            # 约 0.3s
 go test ./pkg/javdb/ -race
+cd flutter_app && flutter analyze
 ```
 
-测试全部离线：`testsupport_test.go` 提供记录型 `stub`（按 path 记录 method/query/header/body）、
-`routerHandler` fixture 回放、`apiBody`/`apiErrBody` 构造 `{"success":1|0,…}` 信封。
-覆盖点包括：双后端回退与聚合错误、api 优先时不被 web 抢答、番号→id 解析、磁链分类
-（`[CNSub]`/`UC無碼破解` 等真实标记 → 字幕 > 无码破解 > 普通，再按体积）、
-ID 与番号的启发式区分（`looksLikeID` vs `IsPlausibleVideoCode`）、登录墙识别
-（真实标题带前导空格也要认出）、缓存命中与并发去重、参数翻译与 `ErrUnsupported` 守卫。
+测试全部离线：`testsupport_test.go` 提供记录型 `stub`、`routerHandler` fixture 回放、
+`apiBody`/`apiErrBody` 构造 `{"success":1|0,…}` 信封。覆盖点包括：双后端回退与聚合错误、
+api 优先时不被 web 抢答、番号→id 解析、磁链分类排序、ID 与番号的启发式区分、登录墙识别、
+缓存命中与并发去重、参数翻译与 `ErrUnsupported` 守卫。
 
 ---
 
@@ -253,6 +299,9 @@ ID 与番号的启发式区分（`looksLikeID` vs `IsPlausibleVideoCode`）、�
 - JavDB 自 2024 年起对绝大多数列表页要求登录，镜像不提供登录入口，因此 **HTML 后端在生产环境基本必须有 cookie**；没有 cookie 时相关能力会返回 `ErrAuthRequired`（不会静默返回空表）。
 - App 端点会随版本变动，`jdsignature` 的 salt/clientID 是逆向产物，可能失效；届时只需替换 `signature.go` 中两个常量。
 - 榜单端点不支持服务端分页，`Page` 由后端本地切窗实现，因此 `MaxPage` 是「本次返回的整表」算出来的，不是服务端真值。
-- App 的磁链 `size` 是 `.torrent` 元数据的体积（KB 级），HTML 页面显示的是影片总容量：`Magnet.SizeBytes` 只在同一 `Source` 内可比，磁链排序也以名称标记（中字/无码破解）优先、体积仅用于同分拆位。
+- App 的磁链 `size` 是 `.torrent` 元数据的体积（KB 级），HTML 页面显示的是影片总容量：`Magnet.SizeBytes` 只在同一 `Source` 内可比。
 - `/v2/search?type=movie` 只回答 `movies` + `current_page`，没有总页数/总数，所以 `SearchResult.MaxPage`/`Total` 会是 `0`（表示「未上报」，不是「只有一页」）。
-- 本仓库只做**读取**：不含下载、转码、分发。请遵守 JavDB 服务条款与所在地区法律，把 `WithRateLimit` 保持在对岸可接受的范围内（默认 2 req/s）。内容含成人影像元数据，请在合规场景使用。
+- 演员榜是 JavDB 官方当前时期热门榜，上游不回传热度指标数字，无法自证排序依据。
+- Jable 播放依赖有效的 `cf_clearance` cookie，失效时该源自动跳过并级联到下一源。
+- Android 后台可用性由前台服务保障；个别厂商 ROM 的极端省电策略仍可能延迟恢复，请求层自愈会在回到前台后自动拉起后端。
+- 本仓库只做**读取与个人使用**：请遵守 JavDB / 各播放源的服务条款与所在地区法律。内容含成人影像元数据，请在合规场景使用。
