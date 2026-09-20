@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import '../widgets/hide_watched_toggle.dart';
 
 /// 榜单页：顶部胶囊切换榜单类型，下方卡片化条目列表（影片/演员）。
 class RankingScreen extends StatefulWidget {
@@ -22,8 +25,24 @@ class _RankingScreenState extends State<RankingScreen> {
     'playback': '热播榜',
     'movies': '影片榜',
     'top250': 'TOP250',
+    'censored': '有码榜',
+    'uncensored': '无码榜',
+    'western': '欧美榜',
+    'fc2': 'FC2榜',
     'actors': '演员榜',
   };
+
+  /// 四个专门类型榜：数据走 TOP250 接口 + vtype 切面（官方 App 能力）。
+  static const _top250KindVtypes = {
+    'censored': 'censored',
+    'uncensored': 'uncensored',
+    'western': 'western',
+    'fc2': 'fc2',
+  };
+
+  /// 当前 kind 是否走 TOP250 接口（TOP250 本身或四个专门类型榜）。
+  bool get _isTop250Based =>
+      _selectedKind == 'top250' || _top250KindVtypes.containsKey(_selectedKind);
 
   late final JavDBClient _client;
   List<Movie> _movies = [];
@@ -36,6 +55,23 @@ class _RankingScreenState extends State<RankingScreen> {
   /// 演员榜的类别维度（JavDB App 接口按 有码/无码/欧美/素人 分榜，
   /// 顺序为官方当前时期热门排序，本地仅透传）。
   String _actorCategory = 'censored';
+
+  /// TOP250 切面（官方 App 能力）：类型 + 年份（2009 至今）。
+  /// 全部传 null；与演员榜类别行同风格的二级胶囊切换。
+  String? _top250Vtype;
+  String? _top250Year;
+
+  static const _top250Types = <String?, String>{
+    null: '全部',
+    'censored': '有码',
+    'uncensored': '无码',
+    'western': '欧美',
+    'fc2': 'FC2',
+  };
+
+  /// 年份切面：官方 App 从 2009 起逐年分榜（后端透传 /api/ranking/top250?year=）。
+  static List<String> get _top250Years =>
+      [for (var y = DateTime.now().year; y >= 2009; y--) '$y'];
 
   @override
   void initState() {
@@ -53,8 +89,14 @@ class _RankingScreenState extends State<RankingScreen> {
 
     try {
       AppLogger.info('Loading ranking: $_selectedKind');
-      final result = await _client.getRanking(_selectedKind,
-          category: _selectedKind == 'actors' ? _actorCategory : null);
+      final result = await _client.getRanking(
+        _isTop250Based ? 'top250' : _selectedKind,
+        category: _selectedKind == 'actors' ? _actorCategory : null,
+        year: _isTop250Based ? _top250Year : null,
+        vtype: _selectedKind == 'top250'
+            ? _top250Vtype
+            : _top250KindVtypes[_selectedKind],
+      );
       // 后端 movies/actors 互斥返回（演员榜只有 actors），需 null 安全解析
       final moviesList = (result['movies'] as List?)
               ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
@@ -92,6 +134,19 @@ class _RankingScreenState extends State<RankingScreen> {
     _loadRanking();
   }
 
+  /// 类型/年份两个维度独立切换，互不重置（可组合如：有码 + 2023）。
+  void _switchTop250Vtype(String? vtype) {
+    if (vtype == _top250Vtype) return;
+    setState(() => _top250Vtype = vtype);
+    _loadRanking();
+  }
+
+  void _switchTop250Year(String? year) {
+    if (year == _top250Year) return;
+    setState(() => _top250Year = year);
+    _loadRanking();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -106,6 +161,8 @@ class _RankingScreenState extends State<RankingScreen> {
           ],
         ),
         actions: [
+          // 右上角：去除看过的开关（默认关，全局持久化）
+          const HideWatchedToggle(),
           if (_selectedKind != 'actors')
             ViewModeToggle(
               mode: _viewMode,
@@ -139,7 +196,25 @@ class _RankingScreenState extends State<RankingScreen> {
               }).toList(),
             ),
           ),
-          // 演员榜的类别切换（有码/无码/欧美/素人，对应 JavDB App 分榜）
+          // TOP250 切面（官方 App 能力）：类型行 + 年份行（2009 至今）
+          // 专门类型榜（有码/无码/欧美/FC2）类型已锁定，仅展示年份行。
+          if (_selectedKind == 'top250')
+            _buildTop250FacetRow(
+              [
+                for (final e in _top250Types.entries) (e.value, e.key),
+              ],
+              selected: _top250Vtype,
+              onSelected: _switchTop250Vtype,
+            ),
+          if (_isTop250Based)
+            _buildTop250FacetRow(
+              [
+                const ('全部', null),
+                for (final y in _top250Years) (y, y),
+              ],
+              selected: _top250Year,
+              onSelected: _switchTop250Year,
+            ),
           if (_selectedKind == 'actors')
             SizedBox(
               height: 48,
@@ -182,7 +257,10 @@ class _RankingScreenState extends State<RankingScreen> {
   }
 
   Widget _buildMovieList(BuildContext context) {
-    if (_movies.isEmpty) {
+    // 去除看过的开关开启时按番号过滤（过滤后为空时保留提示友好）。
+    final movies =
+        context.watch<UserStateProvider>().filterWatchedMovies(_movies);
+    if (movies.isEmpty) {
       return _emptyView(context);
     }
     // 大图模式：海报网格；小图模式：带排名徽章的列表
@@ -196,16 +274,42 @@ class _RankingScreenState extends State<RankingScreen> {
           crossAxisSpacing: 12,
           childAspectRatio: 0.58,
         ),
-        itemCount: _movies.length,
-        itemBuilder: (context, index) => MovieGridCard(movie: _movies[index]),
+        itemCount: movies.length,
+        itemBuilder: (context, index) => MovieGridCard(movie: movies[index]),
       );
     }
     return ListView.separated(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      itemCount: _movies.length,
+      itemCount: movies.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) => RankingMovieTile(movie: _movies[index]),
+      itemBuilder: (context, index) => RankingMovieTile(movie: movies[index]),
+    );
+  }
+
+  /// TOP250 切面胶囊行：value 可为 null（="全部"）。
+  Widget _buildTop250FacetRow(
+    List<(String, String?)> items, {
+    required String? selected,
+    required ValueChanged<String?> onSelected,
+  }) {
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        children: [
+          for (final (label, value) in items)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(label),
+                selected: value == selected,
+                onSelected: (_) => onSelected(value),
+              ),
+            ),
+        ],
+      ),
     );
   }
 

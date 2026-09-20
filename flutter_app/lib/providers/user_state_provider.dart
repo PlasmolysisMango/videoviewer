@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/client.dart';
+import '../api/models.dart';
 import '../services/logger.dart';
 
 /// 标记状态常量（与后端 / JavDB 一致）。
@@ -33,6 +34,39 @@ class UserStateProvider extends ChangeNotifier {
   List<Map<String, dynamic>> get lists => _lists;
   bool get marksLoaded => _marksLoaded;
 
+  // ---------------------------------------------------------------------------
+  // 去除看过的（列表过滤开关：全局 UI 偏好，默认关）
+  // ---------------------------------------------------------------------------
+
+  static const _kHideWatched = 'ui.hide_watched';
+  bool _hideWatched = false;
+
+  bool get hideWatched => _hideWatched;
+
+  /// 已看过的番号集合（大写化，供列表过滤比对）。
+  Set<String> get watchedNumbers => _watched
+      .map((m) => ((m['number'] as String?) ?? '').trim().toUpperCase())
+      .where((n) => n.isNotEmpty)
+      .toSet();
+
+  /// 开关开启时过滤掉已看过的影片（按番号匹配，忽略大小写）。
+  List<Movie> filterWatchedMovies(List<Movie> movies) {
+    if (!_hideWatched) return movies;
+    final watched = watchedNumbers;
+    return movies
+        .where((m) => !watched.contains(m.number.trim().toUpperCase()))
+        .toList();
+  }
+
+  Future<void> toggleHideWatched() async {
+    _hideWatched = !_hideWatched;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kHideWatched, _hideWatched);
+    } catch (_) {}
+  }
+
   Set<String> get _wantWatchIds =>
       _wantWatch.map((m) => (m['id'] as String?) ?? '').toSet();
   Set<String> get _watchedIds =>
@@ -51,6 +85,7 @@ class UserStateProvider extends ChangeNotifier {
     _watched = _decode(prefs.getString('user_marks_watched'));
     _lists = _decode(prefs.getString('user_lists'));
     _marksLoaded = _wantWatch.isNotEmpty || _watched.isNotEmpty;
+    _hideWatched = prefs.getBool(_kHideWatched) ?? false;
     notifyListeners();
   }
 

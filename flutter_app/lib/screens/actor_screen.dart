@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import '../widgets/hide_watched_toggle.dart';
 
 /// 演员专题页：头部资料卡 + 作品列表（大图网格 / 小图列表切换，滚动分页）。
 class ActorScreen extends StatefulWidget {
@@ -140,6 +143,7 @@ class _ActorScreenState extends State<ActorScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         actions: [
+          const HideWatchedToggle(),
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: SortSelector(
@@ -165,6 +169,9 @@ class _ActorScreenState extends State<ActorScreen> {
     if (_error != null) {
       return ErrorRetryView(error: _error!, onRetry: _loadFirstPage);
     }
+    // 去除看过的开关开启时按番号过滤作品列表。
+    final movies =
+        context.watch<UserStateProvider>().filterWatchedMovies(_movies);
     return RefreshIndicator(
       onRefresh: _loadFirstPage,
       child: CustomScrollView(
@@ -178,7 +185,7 @@ class _ActorScreenState extends State<ActorScreen> {
               child: Row(
                 children: [
                   Text(
-                    _movies.isEmpty ? '暂无作品' : '作品 (${_movies.length}${_hasMore ? '+' : ''})',
+                    movies.isEmpty ? '暂无作品' : '作品 (${movies.length}${_hasMore ? '+' : ''})',
                     style: const TextStyle(
                         fontSize: 16, fontWeight: FontWeight.bold),
                   ),
@@ -205,7 +212,7 @@ class _ActorScreenState extends State<ActorScreen> {
               ),
             ),
           ),
-          if (_movies.isEmpty)
+          if (movies.isEmpty)
             const SliverFillRemaining(
               hasScrollBody: false,
               child: SizedBox(),
@@ -223,8 +230,8 @@ class _ActorScreenState extends State<ActorScreen> {
                   ),
                   delegate: SliverChildBuilderDelegate(
                     (context, index) =>
-                        MovieGridCard(movie: _movies[index]),
-                    childCount: _movies.length,
+                        MovieGridCard(movie: movies[index]),
+                    childCount: movies.length,
                   ),
                 ),
               )
@@ -233,7 +240,7 @@ class _ActorScreenState extends State<ActorScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
                 sliver: SliverList.separated(
                   itemBuilder: (context, index) =>
-                      MovieCompactTile(movie: _movies[index]),
+                      MovieCompactTile(movie: movies[index]),
                   separatorBuilder: (_, __) => const SizedBox(height: 10),
                 ),
               ),

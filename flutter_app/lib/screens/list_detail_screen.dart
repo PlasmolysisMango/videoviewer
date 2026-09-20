@@ -4,9 +4,11 @@ import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import '../providers/subscription_provider.dart';
+import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import '../widgets/hide_watched_toggle.dart';
 
 /// 影单详情页：展示一个 JavDB 社区影单（合集）的影片列表，
 /// 支持翻页、排序与订阅（订阅后实时显示在首页"已订阅合集"区块）。
@@ -125,6 +127,7 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
         title: Text(widget.listName.isEmpty ? '合集详情' : widget.listName,
             maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
+          const HideWatchedToggle(),
           SortSelector(
             options: actorSortOptions,
             selected: _sort,
@@ -167,7 +170,10 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
   }
 
   Widget _buildMovieList(BuildContext context) {
-    if (_movies.isEmpty) {
+    // 去除看过的开关开启时按番号过滤（开关见右上角）。
+    final movies =
+        context.watch<UserStateProvider>().filterWatchedMovies(_movies);
+    if (movies.isEmpty) {
       return Center(
         child: Text('暂无数据', style: TextStyle(color: Theme.of(context).hintColor)),
       );
@@ -182,16 +188,16 @@ class _ListDetailScreenState extends State<ListDetailScreen> {
           crossAxisSpacing: 12,
           childAspectRatio: 0.58,
         ),
-        itemCount: _movies.length,
-        itemBuilder: (context, index) => MovieGridCard(movie: _movies[index]),
+        itemCount: movies.length,
+        itemBuilder: (context, index) => MovieGridCard(movie: movies[index]),
       );
     }
     return ListView.separated(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      itemCount: _movies.length,
+      itemCount: movies.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) => RankingMovieTile(movie: _movies[index]),
+      itemBuilder: (context, index) => RankingMovieTile(movie: movies[index]),
     );
   }
 

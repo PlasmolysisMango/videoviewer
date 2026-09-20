@@ -4,9 +4,11 @@ import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../api/models.dart';
 import '../providers/subscription_provider.dart';
+import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import '../widgets/hide_watched_toggle.dart';
 import 'login_screen.dart';
 
 /// 题材影片页：按 tag 组（角色/主題/服裝…）浏览影片。
@@ -123,6 +125,7 @@ class _GenreScreenState extends State<GenreScreen> {
         title: Text(widget.title.isEmpty ? '题材影片' : widget.title,
             maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
+          const HideWatchedToggle(),
           SortSelector(
             options: actorSortOptions,
             selected: _sort,
@@ -223,7 +226,10 @@ class _GenreScreenState extends State<GenreScreen> {
   }
 
   Widget _buildMovieList(BuildContext context) {
-    if (_movies.isEmpty) {
+    // 去除看过的开关开启时按番号过滤（开关见右上角）。
+    final movies =
+        context.watch<UserStateProvider>().filterWatchedMovies(_movies);
+    if (movies.isEmpty) {
       return Center(
         child: Text('暂无数据', style: TextStyle(color: Theme.of(context).hintColor)),
       );
@@ -238,16 +244,16 @@ class _GenreScreenState extends State<GenreScreen> {
           crossAxisSpacing: 12,
           childAspectRatio: 0.58,
         ),
-        itemCount: _movies.length,
-        itemBuilder: (context, index) => MovieGridCard(movie: _movies[index]),
+        itemCount: movies.length,
+        itemBuilder: (context, index) => MovieGridCard(movie: movies[index]),
       );
     }
     return ListView.separated(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      itemCount: _movies.length,
+      itemCount: movies.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) => RankingMovieTile(movie: _movies[index]),
+      itemBuilder: (context, index) => RankingMovieTile(movie: movies[index]),
     );
   }
 

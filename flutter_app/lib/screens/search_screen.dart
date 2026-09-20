@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import '../widgets/hide_watched_toggle.dart';
 
 /// 搜索页：圆角填充搜索框 + 演员快捷入口 + 结果视图（大图网格/小图列表）。
 class SearchScreen extends StatefulWidget {
@@ -144,6 +147,7 @@ class _SearchScreenState extends State<SearchScreen> {
           ],
         ),
         actions: [
+          const HideWatchedToggle(),
           if (_hasSearched)
             Padding(
               padding: const EdgeInsets.only(right: 8),
@@ -218,14 +222,17 @@ class _SearchScreenState extends State<SearchScreen> {
 
   /// 结果视图：相关演员横滑卡片 + 影片（大图网格/小图列表）。
   Widget _resultView(BuildContext context) {
-    if (_movies.isEmpty && _actors.isEmpty) {
+    // 去除看过的开关开启时按番号过滤影片结果。
+    final movies =
+        context.watch<UserStateProvider>().filterWatchedMovies(_movies);
+    if (movies.isEmpty && _actors.isEmpty) {
       return _emptyResultView(context);
     }
     return CustomScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         if (_actors.isNotEmpty) _actorSection(context),
-        if (_movies.isEmpty)
+        if (movies.isEmpty)
           const SliverFillRemaining(
             hasScrollBody: false,
             child: SizedBox(),
@@ -241,8 +248,8 @@ class _SearchScreenState extends State<SearchScreen> {
                 childAspectRatio: 0.58,
               ),
               delegate: SliverChildBuilderDelegate(
-                (context, index) => MovieGridCard(movie: _movies[index]),
-                childCount: _movies.length,
+                (context, index) => MovieGridCard(movie: movies[index]),
+                childCount: movies.length,
               ),
             ),
           )
@@ -251,7 +258,7 @@ class _SearchScreenState extends State<SearchScreen> {
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
             sliver: SliverList.separated(
               itemBuilder: (context, index) =>
-                  MovieCompactTile(movie: _movies[index]),
+                  MovieCompactTile(movie: movies[index]),
               separatorBuilder: (_, __) => const SizedBox(height: 10),
             ),
           ),

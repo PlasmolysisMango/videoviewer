@@ -26,6 +26,7 @@ import 'ranking_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 import 'user_lists_screen.dart';
+import 'watched_screen.dart';
 
 /// 首页：现代流媒体风布局，背景跟随全局主题。
 /// 区块：为你推荐（订阅合集 + TOP250 随机池）、榜单入口、
@@ -347,6 +348,8 @@ class _HomeScreenState extends State<HomeScreen> {
             const Divider(height: 1),
             _buildDrawerItem(context, Icons.favorite_border, '收藏夹（想看）',
                 () => const FavoritesScreen()),
+            _buildDrawerItem(context, Icons.done_all, '看过',
+                () => const WatchedScreen()),
             _buildDrawerItem(context, Icons.history, '历史记录',
                 () => const HistoryScreen()),
             _buildDrawerItem(context, Icons.playlist_add_check, '我的清单',
@@ -684,7 +687,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ------------------------------------------------------------------ 合集入口
 
-  /// 合集入口卡片：进入合集页（TOP250 总榜/年度榜/类型榜）。
+  /// 合集入口卡片：进入合集页（社区合集目录：搜索 + 已订阅，二级进详情）。
   Widget _buildCollectionEntry(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -715,11 +718,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('TOP250 合集',
+                    Text('合集',
                         style: TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600)),
                     SizedBox(height: 2),
-                    Text('总榜 · 年度榜 · 类型切面',
+                    Text('社区影单 · 搜索与订阅',
                         style: TextStyle(fontSize: 12, color: Colors.grey)),
                   ],
                 ),
@@ -735,6 +738,8 @@ class _HomeScreenState extends State<HomeScreen> {
   // ---------------------------------------------------------------- 分栏公共
 
   /// 分栏入口卡片（自带项，无图钉）：跳转对应的浏览/订阅管理页。
+  /// 图标规则（同官方 App）：榜单/合集入口带图标；题材/演员入口不带
+  /// （[showIcon] 传 false 时隐藏左侧图标块）。
   Widget _buildSectionEntryCard(
     BuildContext context, {
     required IconData icon,
@@ -742,6 +747,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required String title,
     required String subtitle,
     required VoidCallback onTap,
+    bool showIcon = true,
   }) {
     return InkWell(
       borderRadius: BorderRadius.circular(14),
@@ -755,16 +761,18 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: Row(
           children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: iconColor.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(12),
+            if (showIcon) ...[
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: iconColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: iconColor, size: 24),
               ),
-              child: Icon(icon, color: iconColor, size: 24),
-            ),
-            const SizedBox(width: 12),
+              const SizedBox(width: 12),
+            ],
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -881,6 +889,7 @@ class _HomeScreenState extends State<HomeScreen> {
             iconColor: const Color(0xFF4FC3F7),
             title: '浏览全部题材',
             subtitle: '角色 · 主题 · 服装 · 行为…',
+            showIcon: false,
             onTap: () => _push(context, const GenreCatalogScreen()),
           ),
           if (subs.isNotEmpty)
@@ -945,6 +954,7 @@ class _HomeScreenState extends State<HomeScreen> {
             iconColor: const Color(0xFFE8506E),
             title: '全部演员',
             subtitle: '热门演员 · 演员榜',
+            showIcon: false,
             onTap: () => _push(context, const ActorCatalogScreen()),
           ),
         ),
