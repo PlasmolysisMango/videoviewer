@@ -80,7 +80,7 @@ class SubtitleService extends ChangeNotifier {
   bool enabled = true;
 
   /// 字幕字号（逻辑像素）。
-  double fontSize = 20;
+  double fontSize = 18;
 
   /// 时间轴偏移（毫秒）。正值 = 字幕延后显示，负值 = 提前。
   int offsetMs = 0;
@@ -92,7 +92,7 @@ class SubtitleService extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       enabled = prefs.getBool(_kEnabled) ?? true;
-      fontSize = prefs.getDouble(_kFontSize) ?? 20;
+      fontSize = prefs.getDouble(_kFontSize) ?? 18;
       offsetMs = prefs.getInt(_kOffsetMs) ?? 0;
       fontColor = prefs.getInt(_kFontColor) ?? 0xFFFFFFFF;
       notifyListeners();
@@ -172,7 +172,7 @@ class SubtitleService extends ChangeNotifier {
     // 持久缓存（7 天）：重进页面零请求。
     try {
       final cached = await DataCache.instance
-          .read('subs.auto.$code', maxAge: const Duration(days: 7));
+          .read('subs.auto.v2.$code', maxAge: const Duration(days: 7));
       if (cached is Map) {
         final ls = _fromCache(code, cached.cast<String, dynamic>());
         if (ls != null) {
@@ -220,7 +220,7 @@ class SubtitleService extends ChangeNotifier {
       cues: cues,
     );
     _mem[code] = ls;
-    unawaited(DataCache.instance.write('subs.auto.$code', {
+    unawaited(DataCache.instance.write('subs.auto.v2.$code', {
       'source': ls.source,
       'lang': ls.lang,
       'name': ls.name,
@@ -251,7 +251,7 @@ class SubtitleService extends ChangeNotifier {
       );
       _mem[code] = ls;
       _negAt.remove(code);
-      unawaited(DataCache.instance.write('subs.auto.$code', {
+      unawaited(DataCache.instance.write('subs.auto.v2.$code', {
         'source': ls.source,
         'lang': ls.lang,
         'name': ls.name,

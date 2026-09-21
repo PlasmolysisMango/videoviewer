@@ -375,15 +375,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     );
   }
 
-  /// 字幕 overlay：白字黑边 + 半透明底。Positioned 恒定在 Stack 直接
+  /// 字幕 overlay：白字黑边（无背景色）。Positioned 恒定在 Stack 直接
   /// 层（ParentData 要求 Positioned 必须是 Stack 直接子节点），内容由
   /// ValueListenableBuilder 隔离重建，无字幕时内容为空——widget 类型
-  /// 不切换，Stack 子节点结构稳定。
+  /// 不切换，Stack 子节点结构稳定。全屏时避让浮层控制栏，控制栏隐藏
+  /// 后下移贴底。
   Widget _buildSubtitleOverlay() {
     return Positioned(
       left: 24,
       right: 24,
-      bottom: _isFullscreen ? 76 : 10,
+      bottom: _isFullscreen ? (_controlsVisible ? 76 : 24) : 10,
       child: ValueListenableBuilder<({SubCue? cue, int color, double size})>(
         valueListenable: _subtitleRender,
         builder: (context, r, _) {
@@ -394,10 +395,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               child: Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.45),
-                  borderRadius: BorderRadius.circular(6),
-                ),
                 child: Text(
                   cue.text,
                   textAlign: TextAlign.center,
@@ -605,6 +602,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     return Positioned.fill(
       // 隔离画面层与 UI 层的重绘：字幕/控制栏刷新不再波及 Texture 区域，
       // 画面帧更新只由 surface 通知与 _viewEpoch 确定性重建驱动。
+      // 已真机验证：配合字幕 ValueNotifier 隔离彻底解决稳态/seek 黑屏。
       child: RepaintBoundary(
         child: LayoutBuilder(builder: (context, box) {
           final maxW = box.maxWidth;
