@@ -47,11 +47,25 @@ class _RankingScreenState extends State<RankingScreen> {
   late final JavDBClient _client;
   List<Movie> _movies = [];
   List<Actor> _actors = [];
+
   /// 影片榜的展示模式（大图网格/小图列表）；演员榜不参与切换。
   MovieViewMode _viewMode = MovieViewMode.list;
   bool _isLoading = true;
   String? _error;
   late String _selectedKind;
+
+  /// 分页：后端每次返回 limit 条并给出 maxPage（TOP250 总量 250 条约
+  /// 5 页、演员榜 97 条约 2 页），列表滚到底部时自动加载下一页。
+  /// limit 与后端/上游默认页大小（50）保持一致，否则 maxPage 语义错位。
+  static const _pageSize = 50;
+  int _page = 1;
+  int _maxPage = 1;
+  bool _isLoadingMore = false;
+
+  /// 请求代际：切换榜单/切面时递增；旧请求返回后直接丢弃，避免把
+  /// 过期数据 append 到新列表（也防止旧请求的错误覆盖新状态）。
+  int _loadSeq = 0;
+
   /// 演员榜的类别维度（JavDB App 接口按 有码/无码/欧美/素人 分榜，
   /// 顺序为官方当前时期热门排序，本地仅透传）。
   String _actorCategory = 'censored';
@@ -82,21 +96,19 @@ class _RankingScreenState extends State<RankingScreen> {
   }
 
   Future<void> _loadRanking() async {
+    final seq = ++_loadSeq;
     setState(() {
       _isLoading = true;
       _error = null;
+      _isLoadingMore = false;
+      _page = 1;
+      _maxPage = 1;
     });
 
     try {
       AppLogger.info('Loading ranking: $_selectedKind');
-      final result = await _client.getRanking(
-        _isTop250Based ? 'top250' : _selectedKind,
-        category: _selectedKind == 'actors' ? _actorCategory : null,
-        year: _isTop250Based ? _top250Year : null,
-        vtype: _selectedKind == 'top250'
-            ? _top250Vtype
-            : _top250KindVtypes[_selectedKind],
-      );
+      final result = await _fetchRankingPage(1);
+      if (!mounted || seq != _loadSeq) return;
       // 后端 movies/actors 互斥返回（演员榜只有 actors），需 null 安全解析
       final moviesList = (result['movies'] as List?)
               ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
@@ -109,17 +121,74 @@ class _RankingScreenState extends State<RankingScreen> {
       setState(() {
         _movies = moviesList;
         _actors = actorsList;
+        _page = (result['page'] as int?) ?? 1;
+        _maxPage = (result['maxPage'] as int?) ?? 1;
         _isLoading = false;
       });
       AppLogger.info(
-          'Loaded ${moviesList.length} movies, ${actorsList.length} actors');
+          'Loaded ${moviesList.length} movies, ${actorsList.length} actors '
+          '(page $_page/$_maxPage)');
     } catch (e) {
+      if (!mounted || seq != _loadSeq) return;
       setState(() {
         _error = e.toString();
         _isLoading = false;
       });
       AppLogger.error('Failed to load ranking', e);
     }
+  }
+
+  /// 请求指定页；参数与首屏一致（kind/切面/演员类别）。
+  Future<Map<String, dynamic>> _fetchRankingPage(int page) {
+    return _client.getRanking(
+      _isTop250Based ? 'top250' : _selectedKind,
+      category: _selectedKind == 'actors' ? _actorCategory : null,
+      year: _isTop250Based ? _top250Year : null,
+      vtype: _selectedKind == 'top250'
+          ? _top250Vtype
+          : _top250KindVtypes[_selectedKind],
+      page: page,
+      limit: _pageSize,
+    );
+  }
+
+  /// 滚到底部附近时加载下一页并追加；失败静默（保留已加载内容，
+  /// 用户继续下滑会再次触发重试）。
+  Future<void> _loadMore() async {
+    if (_isLoading || _isLoadingMore || _page >= _maxPage) return;
+    final seq = _loadSeq;
+    setState(() => _isLoadingMore = true);
+    try {
+      final result = await _fetchRankingPage(_page + 1);
+      if (!mounted || seq != _loadSeq) return;
+      final moreMovies = (result['movies'] as List?)
+              ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
+              .toList() ??
+          const <Movie>[];
+      final moreActors = (result['actors'] as List?)
+              ?.map((a) => Actor.fromJson(a as Map<String, dynamic>))
+              .toList() ??
+          const <Actor>[];
+      setState(() {
+        _movies = [..._movies, ...moreMovies];
+        _actors = [..._actors, ...moreActors];
+        _page = (result['page'] as int?) ?? (_page + 1);
+        _maxPage = (result['maxPage'] as int?) ?? _maxPage;
+        _isLoadingMore = false;
+      });
+      AppLogger.info('Loaded page $_page/$_maxPage '
+          '(+${moreMovies.length} movies, +${moreActors.length} actors)');
+    } catch (e) {
+      if (!mounted || seq != _loadSeq) return;
+      setState(() => _isLoadingMore = false);
+      AppLogger.warning('Load more ranking page failed: $e');
+    }
+  }
+
+  /// 列表滚动监听：距离底部 800px 内触发下一页。
+  bool _onScrollNotification(ScrollNotification n) {
+    if (n.metrics.extentAfter < 800) _loadMore();
+    return false;
   }
 
   void _switchKind(String kind) {
@@ -265,26 +334,81 @@ class _RankingScreenState extends State<RankingScreen> {
     }
     // 大图模式：海报网格；小图模式：带排名徽章的列表
     if (_viewMode == MovieViewMode.grid) {
-      return GridView.builder(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: 170,
-          mainAxisSpacing: 14,
-          crossAxisSpacing: 12,
-          childAspectRatio: 0.58,
+      return _buildScrollableList(
+        context,
+        sliver: SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+          sliver: SliverGrid.builder(
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 170,
+              mainAxisSpacing: 14,
+              crossAxisSpacing: 12,
+              childAspectRatio: 0.58,
+            ),
+            itemCount: movies.length,
+            itemBuilder: (context, index) =>
+                MovieGridCard(movie: movies[index]),
+          ),
         ),
-        itemCount: movies.length,
-        itemBuilder: (context, index) => MovieGridCard(movie: movies[index]),
+        total: _movies.length,
       );
     }
-    return ListView.separated(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      itemCount: movies.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) => RankingMovieTile(movie: movies[index]),
+    return _buildScrollableList(
+      context,
+      sliver: SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        sliver: SliverList.separated(
+          itemCount: movies.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, index) =>
+              RankingMovieTile(movie: movies[index]),
+        ),
+      ),
+      total: _movies.length,
     );
+  }
+
+  /// 可滚动列表外壳：滚动监听（触发翻页）+ 底部状态条。
+  Widget _buildScrollableList(BuildContext context,
+      {required Widget sliver, required int total}) {
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onScrollNotification,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          sliver,
+          SliverToBoxAdapter(child: _buildListFooter(context, total)),
+        ],
+      ),
+    );
+  }
+
+  /// 列表底部状态：加载下一页 / 已加载全部 / 等待触底。
+  Widget _buildListFooter(BuildContext context, int total) {
+    if (_isLoadingMore) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Center(
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(strokeWidth: 2.4),
+          ),
+        ),
+      );
+    }
+    // 只有多页数据才提示“已加载全部”，避免短列表出现冗余文案。
+    if (_page >= _maxPage && total > _pageSize) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        child: Center(
+          child: Text('已加载全部 $total 条',
+              style:
+                  TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+        ),
+      );
+    }
+    return const SizedBox(height: 24);
   }
 
   /// TOP250 切面胶囊行：value 可为 null（="全部"）。
@@ -317,12 +441,18 @@ class _RankingScreenState extends State<RankingScreen> {
     if (_actors.isEmpty) {
       return _emptyView(context);
     }
-    return ListView.separated(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      itemCount: _actors.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) => RankingActorTile(actor: _actors[index]),
+    return _buildScrollableList(
+      context,
+      sliver: SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        sliver: SliverList.separated(
+          itemCount: _actors.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, index) =>
+              RankingActorTile(actor: _actors[index]),
+        ),
+      ),
+      total: _actors.length,
     );
   }
 
