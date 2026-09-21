@@ -57,7 +57,8 @@ class ViewModeToggle extends StatelessWidget {
   final MovieViewMode mode;
   final ValueChanged<MovieViewMode> onChanged;
 
-  const ViewModeToggle({super.key, required this.mode, required this.onChanged});
+  const ViewModeToggle(
+      {super.key, required this.mode, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -99,7 +100,10 @@ class ActorSearchCard extends StatelessWidget {
               radius: 28,
               backgroundColor: Theme.of(context).dividerColor,
               backgroundImage: actor.avatarUrl != null
-                  ? NetworkImage(resolveImageUrl(actor.avatarUrl!))
+                  ? CachedNetworkImageProvider(
+                      resolveImageUrl(actor.avatarUrl!),
+                      maxWidth: 168, // radius 28×2×3x：按显示尺寸解码，避免全尺寸位图驻内存
+                    )
                   : null,
               onBackgroundImageError:
                   actor.avatarUrl != null ? (_, __) {} : null,
@@ -139,8 +143,9 @@ class MovieCompactTile extends StatelessWidget {
     // 小图模式是竖版容器，优先用竖版海报，避免横版剧照被裁成中间竖条。
     final cover = movie.posterUrl ?? movie.thumbUrl ?? movie.coverUrl;
     final actors = movie.actors;
-    final actorText =
-        (actors != null && actors.isNotEmpty) ? actors.join(' / ') : movie.number;
+    final actorText = (actors != null && actors.isNotEmpty)
+        ? actors.join(' / ')
+        : movie.number;
     return InkWell(
       borderRadius: BorderRadius.circular(14),
       onTap: () => pushMovieDetail(context, movie),
@@ -159,6 +164,7 @@ class MovieCompactTile extends StatelessWidget {
                     ? CachedNetworkImage(
                         imageUrl: resolveImageUrl(cover),
                         fit: BoxFit.cover,
+                        memCacheWidth: 276, // 92dp×3x：列表小图按显示尺寸解码
                         placeholder: (_, __) => Container(
                           color: Theme.of(context).dividerColor,
                         ),
@@ -185,7 +191,9 @@ class MovieCompactTile extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w600, height: 1.3),
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          height: 1.3),
                     ),
                     const SizedBox(height: 5),
                     Text(
@@ -198,7 +206,8 @@ class MovieCompactTile extends StatelessWidget {
                     const Spacer(),
                     Row(
                       children: [
-                        if (movie.releaseDate != null && movie.releaseDate!.isNotEmpty)
+                        if (movie.releaseDate != null &&
+                            movie.releaseDate!.isNotEmpty)
                           Text(
                             movie.releaseDate!,
                             style: TextStyle(
@@ -275,6 +284,7 @@ class RankingMovieTile extends StatelessWidget {
                     ? CachedNetworkImage(
                         imageUrl: resolveImageUrl(cover),
                         fit: BoxFit.cover,
+                        memCacheWidth: 192, // 64dp×3x：列表小图按显示尺寸解码
                         placeholder: (_, __) => Container(
                           color: Theme.of(context).dividerColor,
                         ),
@@ -389,7 +399,10 @@ class RankingActorTile extends StatelessWidget {
               radius: 28,
               backgroundColor: Theme.of(context).dividerColor,
               backgroundImage: actor.avatarUrl != null
-                  ? NetworkImage(resolveImageUrl(actor.avatarUrl!))
+                  ? CachedNetworkImageProvider(
+                      resolveImageUrl(actor.avatarUrl!),
+                      maxWidth: 168, // radius 28×2×3x：按显示尺寸解码，避免全尺寸位图驻内存
+                    )
                   : null,
               onBackgroundImageError:
                   actor.avatarUrl != null ? (_, __) {} : null,
@@ -456,6 +469,7 @@ class MovieGridCard extends StatelessWidget {
                     CachedNetworkImage(
                       imageUrl: resolveImageUrl(cover),
                       fit: BoxFit.cover,
+                      memCacheWidth: 510, // 网格卡宽上限 170dp×3x
                       placeholder: (_, __) =>
                           Container(color: cardColor(context)),
                       errorWidget: (_, __, ___) => Container(
@@ -622,7 +636,8 @@ class SortSelector extends StatelessWidget {
             const SizedBox(width: 4),
             Text(
               current.label,
-              style: TextStyle(fontSize: 13, color: Theme.of(context).hintColor),
+              style:
+                  TextStyle(fontSize: 13, color: Theme.of(context).hintColor),
             ),
             const SizedBox(width: 2),
             Icon(Icons.expand_more,
@@ -633,4 +648,3 @@ class SortSelector extends StatelessWidget {
     );
   }
 }
-

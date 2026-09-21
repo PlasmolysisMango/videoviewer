@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -164,7 +165,8 @@ class _ActorCatalogScreenState extends State<ActorCatalogScreen> {
           ),
         ],
       ),
-      body: _searchMode ? _buildSearchBody(context) : _buildCatalogBody(context),
+      body:
+          _searchMode ? _buildSearchBody(context) : _buildCatalogBody(context),
     );
   }
 
@@ -210,8 +212,9 @@ class _ActorCatalogScreenState extends State<ActorCatalogScreen> {
           itemCount: _searchResults.length,
           itemBuilder: (context, i) {
             final actor = _searchResults[i];
-            final subscribed =
-                context.watch<SubscriptionProvider>().isSubscribed(kSubActor, actor.id);
+            final subscribed = context
+                .watch<SubscriptionProvider>()
+                .isSubscribed(kSubActor, actor.id);
             return _buildActorCard(context, actor, subscribed: subscribed);
           },
         ),
@@ -233,41 +236,42 @@ class _ActorCatalogScreenState extends State<ActorCatalogScreen> {
 
   Widget _buildCatalogBody(BuildContext context) {
     return Column(
-        children: [
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                    ? Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text('加载失败: $_error',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                    color: Theme.of(context).colorScheme.error,
-                                    fontSize: 12)),
-                            const SizedBox(height: 12),
-                            OutlinedButton(
-                                onPressed: () => _load(page: _page),
-                                child: const Text('重试')),
-                          ],
-                        ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: () => _load(page: _page),
-                        child: _buildGrid(context),
+      children: [
+        Expanded(
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text('加载失败: $_error',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  color: Theme.of(context).colorScheme.error,
+                                  fontSize: 12)),
+                          const SizedBox(height: 12),
+                          OutlinedButton(
+                              onPressed: () => _load(page: _page),
+                              child: const Text('重试')),
+                        ],
                       ),
-          ),
-          if (!_isLoading && _error == null && _maxPage > 1) _buildPager(context),
-        ],
+                    )
+                  : RefreshIndicator(
+                      onRefresh: () => _load(page: _page),
+                      child: _buildGrid(context),
+                    ),
+        ),
+        if (!_isLoading && _error == null && _maxPage > 1) _buildPager(context),
+      ],
     );
   }
 
   Widget _buildGrid(BuildContext context) {
     if (_actors.isEmpty) {
       return Center(
-        child: Text('暂无数据', style: TextStyle(color: Theme.of(context).hintColor)),
+        child:
+            Text('暂无数据', style: TextStyle(color: Theme.of(context).hintColor)),
       );
     }
     final subs = context.watch<SubscriptionProvider>();
@@ -301,9 +305,13 @@ class _ActorCatalogScreenState extends State<ActorCatalogScreen> {
             children: [
               CircleAvatar(
                 radius: 38,
-                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                backgroundColor:
+                    Theme.of(context).colorScheme.surfaceContainerHighest,
                 backgroundImage: actor.avatarUrl != null
-                    ? NetworkImage(resolveImageUrl(actor.avatarUrl!))
+                    ? CachedNetworkImageProvider(
+                        resolveImageUrl(actor.avatarUrl!),
+                        maxWidth: 228, // radius 38×2×3x：按显示尺寸解码
+                      )
                     : null,
                 onBackgroundImageError:
                     actor.avatarUrl != null ? (_, __) {} : null,
@@ -345,8 +353,7 @@ class _ActorCatalogScreenState extends State<ActorCatalogScreen> {
                   ? const Icon(Icons.bookmark_added, color: Color(0xFFFFD54F))
                   : const Icon(Icons.bookmark_add_outlined),
               tooltip: subscribed ? '取消订阅' : '订阅到首页',
-              onPressed: () =>
-                  _toggleSubscribe(actor, subscribed: subscribed),
+              onPressed: () => _toggleSubscribe(actor, subscribed: subscribed),
             ),
           ),
         ],

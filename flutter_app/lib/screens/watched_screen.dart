@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -94,10 +95,15 @@ class _WatchedCard extends StatelessWidget {
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(10),
                     child: cover.isNotEmpty
-                        ? Image.network(
-                            resolveImageUrl(cover),
+                        ? CachedNetworkImage(
+                            imageUrl: resolveImageUrl(cover),
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(
+                            memCacheWidth: 600, // 网格卡按 3x 屏限幅
+                            placeholder: (_, __) => Container(
+                              color: Theme.of(context).dividerColor,
+                              child: const Icon(Icons.movie),
+                            ),
+                            errorWidget: (_, __, ___) => Container(
                               color: Theme.of(context).dividerColor,
                               child: const Icon(Icons.movie),
                             ),

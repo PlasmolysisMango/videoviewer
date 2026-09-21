@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -121,11 +122,12 @@ class _MovieFavCard extends StatelessWidget {
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(10),
                     child: cover.isNotEmpty
-                        ? Image.network(
-                            resolveImageUrl(cover),
+                        ? CachedNetworkImage(
+                            imageUrl: resolveImageUrl(cover),
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                const _CoverFallback(),
+                            memCacheWidth: 600, // 网格卡按 3x 屏限幅
+                            placeholder: (_, __) => const _CoverFallback(),
+                            errorWidget: (_, __, ___) => const _CoverFallback(),
                           )
                         : const _CoverFallback(),
                   ),
@@ -176,7 +178,8 @@ class _KindFavorites extends StatelessWidget {
   Widget build(BuildContext context) {
     final subs = context.watch<SubscriptionProvider>().byKind(kind);
     if (subs.isEmpty) {
-      return Center(child: Text(emptyHint, style: const TextStyle(color: Colors.grey)));
+      return Center(
+          child: Text(emptyHint, style: const TextStyle(color: Colors.grey)));
     }
     return ListView.separated(
       itemCount: subs.length,
@@ -240,7 +243,8 @@ class _KindFavorites extends StatelessWidget {
           context,
           MaterialPageRoute(
             builder: (_) => ActorScreen(
-              actor: Actor(id: id, name: name, avatarUrl: s['avatar'] as String?),
+              actor:
+                  Actor(id: id, name: name, avatarUrl: s['avatar'] as String?),
             ),
           ),
         );
@@ -254,7 +258,8 @@ class _UnfavButton extends StatelessWidget {
   final String kind;
   final bool small;
 
-  const _UnfavButton({required this.id, this.kind = kSubMovie, this.small = false});
+  const _UnfavButton(
+      {required this.id, this.kind = kSubMovie, this.small = false});
 
   @override
   Widget build(BuildContext context) {
@@ -264,13 +269,11 @@ class _UnfavButton extends StatelessWidget {
         try {
           if (kind == kSubMovie) {
             await context.read<UserStateProvider>().toggleMark(
-                  {'id': id},
-                  kMarkWantWatch,
-                );
+              {'id': id},
+              kMarkWantWatch,
+            );
           } else {
-            await context
-                .read<SubscriptionProvider>()
-                .unsubscribe(kind, id);
+            await context.read<SubscriptionProvider>().unsubscribe(kind, id);
           }
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

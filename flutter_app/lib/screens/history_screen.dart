@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../services/history.dart';
@@ -93,12 +94,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
       leading: ClipRRect(
         borderRadius: BorderRadius.circular(6),
         child: e.cover.isNotEmpty
-            ? Image.network(
-                resolveImageUrl(e.cover),
+            ? CachedNetworkImage(
+                imageUrl: resolveImageUrl(e.cover),
                 width: 48,
                 height: 64,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
+                memCacheWidth: 192, // 48dp×3x：列表缩略图按显示尺寸解码
+                placeholder: (_, __) => Container(
+                  width: 48,
+                  height: 64,
+                  color: Theme.of(context).dividerColor,
+                ),
+                errorWidget: (_, __, ___) => Container(
                   width: 48,
                   height: 64,
                   color: Theme.of(context).dividerColor,
@@ -130,8 +137,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
           _stateBadge(context, e.state),
           const SizedBox(height: 4),
           Text(_formatTime(e.viewedAt),
-              style: TextStyle(
-                  fontSize: 11, color: Theme.of(context).hintColor)),
+              style:
+                  TextStyle(fontSize: 11, color: Theme.of(context).hintColor)),
         ],
       ),
       onTap: () => Navigator.push(
@@ -158,8 +165,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         color: color.withOpacity(0.12),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Text(label,
-          style: TextStyle(fontSize: 11, color: color)),
+      child: Text(label, style: TextStyle(fontSize: 11, color: color)),
     );
   }
 

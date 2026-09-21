@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -26,7 +27,7 @@ class _ActorScreenState extends State<ActorScreen> {
   final _scrollController = ScrollController();
   List<Movie> _movies = [];
   MovieViewMode _viewMode = MovieViewMode.grid;
-  String _sort = '';  // 当前排序方式
+  String _sort = ''; // 当前排序方式
   // 作品范围：空=全部 / 'solo'=单体 / 'costar'=共演（后端差集，一次性全量）
   String _mode = '';
   bool _isLoading = true;
@@ -185,7 +186,9 @@ class _ActorScreenState extends State<ActorScreen> {
               child: Row(
                 children: [
                   Text(
-                    movies.isEmpty ? '暂无作品' : '作品 (${movies.length}${_hasMore ? '+' : ''})',
+                    movies.isEmpty
+                        ? '暂无作品'
+                        : '作品 (${movies.length}${_hasMore ? '+' : ''})',
                     style: const TextStyle(
                         fontSize: 16, fontWeight: FontWeight.bold),
                   ),
@@ -229,8 +232,7 @@ class _ActorScreenState extends State<ActorScreen> {
                     childAspectRatio: 0.58,
                   ),
                   delegate: SliverChildBuilderDelegate(
-                    (context, index) =>
-                        MovieGridCard(movie: movies[index]),
+                    (context, index) => MovieGridCard(movie: movies[index]),
                     childCount: movies.length,
                   ),
                 ),
@@ -288,10 +290,14 @@ class _ActorScreenState extends State<ActorScreen> {
                   width: 84,
                   height: 112,
                   child: avatar != null
-                      ? Image.network(
-                          resolveImageUrl(avatar),
+                      ? CachedNetworkImage(
+                          imageUrl: resolveImageUrl(avatar),
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(
+                          memCacheWidth: 336, // 84dp×3x：头部头像按显示尺寸解码
+                          placeholder: (_, __) => Container(
+                            color: Theme.of(context).dividerColor,
+                          ),
+                          errorWidget: (_, __, ___) => Container(
                             color: Theme.of(context).dividerColor,
                             child: const Icon(Icons.person, size: 40),
                           ),
@@ -319,8 +325,7 @@ class _ActorScreenState extends State<ActorScreen> {
                       Text(
                         '${widget.actor.videosCount} 部作品',
                         style: TextStyle(
-                            fontSize: 13,
-                            color: Theme.of(context).hintColor),
+                            fontSize: 13, color: Theme.of(context).hintColor),
                       ),
                     ],
                   ],

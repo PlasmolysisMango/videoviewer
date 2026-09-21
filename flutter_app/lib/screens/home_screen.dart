@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -167,8 +168,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
       // 订阅合集
       for (final s in provider.byKind(kSubCollection))
-        _safeMovies(() =>
-            _client.getListMovies((s['id'] as String?) ?? '', limit: 20)),
+        _safeMovies(
+            () => _client.getListMovies((s['id'] as String?) ?? '', limit: 20)),
       // 订阅题材（group 为 web 筛选组编号，id 为 tag ID）
       for (final s in provider.byKind(kSubGenre))
         _safeMovies(() => _client.getGenreMovies(
@@ -194,8 +195,8 @@ class _HomeScreenState extends State<HomeScreen> {
         // 冷缓存下全部切面同时请求可能被上游限流而全空；
         // 先试一次总榜单（单请求不易触发限流），仍失败才降级热播榜。
         AppLogger.warning('Random pool empty, retry top250 total list');
-        final r = await _safeMovies(
-            () => _client.getRanking('top250', limit: 40));
+        final r =
+            await _safeMovies(() => _client.getRanking('top250', limit: 40));
         final ms = (r['movies'] as List?)
                 ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
                 .toList() ??
@@ -353,10 +354,10 @@ class _HomeScreenState extends State<HomeScreen> {
             const Divider(height: 1),
             _buildDrawerItem(context, Icons.favorite_border, '收藏夹（想看）',
                 () => const FavoritesScreen()),
-            _buildDrawerItem(context, Icons.done_all, '看过',
-                () => const WatchedScreen()),
-            _buildDrawerItem(context, Icons.history, '历史记录',
-                () => const HistoryScreen()),
+            _buildDrawerItem(
+                context, Icons.done_all, '看过', () => const WatchedScreen()),
+            _buildDrawerItem(
+                context, Icons.history, '历史记录', () => const HistoryScreen()),
             _buildDrawerItem(context, Icons.playlist_add_check, '我的清单',
                 () => const UserListsScreen()),
             _buildDrawerItem(context, Icons.settings_outlined, '设置',
@@ -455,12 +456,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   _buildBanner(context),
                   _buildSectionHeader(context, '榜单', Icons.emoji_events),
                   _buildRankingEntries(context),
-                  _buildSectionHeader(context, '合集', Icons.collections_bookmark),
+                  _buildSectionHeader(
+                      context, '合集', Icons.collections_bookmark),
                   _buildCollectionEntry(context),
                   _buildSubscribedCollectionCards(context),
                   _buildSectionHeader(context, '题材', Icons.category),
                   _buildGenreSection(context),
-                  _buildSectionHeader(context, '演员', Icons.face_retouching_natural),
+                  _buildSectionHeader(
+                      context, '演员', Icons.face_retouching_natural),
                   _buildActorSection(context),
                 ],
               ),
@@ -581,10 +584,12 @@ class _HomeScreenState extends State<HomeScreen> {
             fit: StackFit.expand,
             children: [
               if (movie.coverUrl != null)
-                Image.network(
-                  resolveImageUrl(movie.coverUrl!),
+                CachedNetworkImage(
+                  imageUrl: resolveImageUrl(movie.coverUrl!),
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
+                  memCacheWidth: 1200, // banner 全宽横版封面，按 3x 屏限幅
+                  placeholder: (_, __) => Container(color: _cardColor),
+                  errorWidget: (_, __, ___) => Container(
                       color: _cardColor,
                       child: const Icon(Icons.movie, size: 56)),
                 )
@@ -788,8 +793,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           fontSize: 15, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 2),
                   Text(subtitle,
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.grey)),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 ],
               ),
             ),
@@ -828,12 +832,10 @@ class _HomeScreenState extends State<HomeScreen> {
             borderRadius: BorderRadius.circular(14),
             onTap: () => _push(
               context,
-              ListDetailScreen(
-                  listId: id, listName: name, moviesCount: count),
+              ListDetailScreen(listId: id, listName: name, moviesCount: count),
             ),
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: _cardColor,
                 borderRadius: BorderRadius.circular(14),
@@ -1010,7 +1012,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   radius: 32,
                   backgroundColor: _cardColor,
                   backgroundImage: actor.avatarUrl != null
-                      ? NetworkImage(resolveImageUrl(actor.avatarUrl!))
+                      ? CachedNetworkImageProvider(
+                          resolveImageUrl(actor.avatarUrl!),
+                          maxWidth: 192, // radius 32×2×3x：按显示尺寸解码
+                        )
                       : null,
                   onBackgroundImageError:
                       actor.avatarUrl != null ? (_, __) {} : null,
