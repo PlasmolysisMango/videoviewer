@@ -590,9 +590,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   /// 视频画面区：普通/全屏共用同一棵 widget 结构（Positioned.fill >
-  /// ClipRect > OverflowBox > 画面实例），仅尺寸计算不同：普通 contain
-  /// 完整显示留黑边，全屏 cover 铺满裁切。画面 widget 的布局尺寸始终
-  /// 等于实际显示尺寸——不用 FittedBox/Transform 对 Texture 层做 GPU
+  /// ClipRect > OverflowBox > 画面实例），尺寸统一按 contain 计算（完整
+  /// 显示、不变形，黑边填充剩余区域）——画面 widget 的布局尺寸始终
+  /// 等于实际显示尺寸，不用 FittedBox/Transform 对 Texture 层做 GPU
   /// 缩放（部分设备旋转后黑屏）；各层 slot 同构让切全屏时同一实例
   /// 直接复用（reparent/unmount 同样是黑帧来源）。
   Widget _buildVideoArea(PlayerEngine? c, bool initialized) {
@@ -612,10 +612,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
           if (!maxW.isFinite || !maxH.isFinite || ar <= 0) {
             w = maxW.isFinite ? maxW : 16;
             h = maxH.isFinite ? maxH : 9;
-          } else if (_isFullscreen) {
-            w = max(maxW, maxH * ar);
-            h = w / ar;
           } else {
+            // contain（普通/全屏一致）：在可用区域内最大化且完整显示，
+            // 不裁切不拉伸；全屏之前用 cover 铺满会截掉画面两侧/上下。
             w = min(maxW, maxH * ar);
             h = w / ar;
           }

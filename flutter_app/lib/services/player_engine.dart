@@ -83,7 +83,16 @@ class VideoPlayerEngine implements PlayerEngine {
   bool get isPlaying => _c.value.isPlaying;
 
   @override
-  double get aspectRatio => _c.value.aspectRatio;
+  double get aspectRatio {
+    // video_player 内置 getter 在 size 未知时返回 1.0（正方形），照它布局
+    // 会把非方形视频拉伸变形（切换源/元数据未就绪时可见）；未知时按
+    // 16/9 兜底更接近绝大多数片源，size 就绪后自动恢复真实比例。
+    final s = _c.value.size;
+    if (s.width > 0 && s.height > 0) {
+      return s.width / s.height;
+    }
+    return 16 / 9;
+  }
 
   @override
   Size get videoSize => _c.value.size;
