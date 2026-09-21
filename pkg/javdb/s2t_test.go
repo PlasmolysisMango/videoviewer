@@ -40,6 +40,22 @@ func TestToSimplifiedExtVariants(t *testing.T) {
 	}
 }
 
+// OpenCC regressions: variant forms the old flat char map leaked (為/製/麽/髮)
+// must convert, and word-level ambiguity must resolve in the right direction.
+func TestToSimplifiedOpenCC(t *testing.T) {
+	cases := [][2]string{
+		{"很高兴能為你服务", "很高兴能为你服务"},
+		{"製片：什麽都完全同意", "制片：什么都完全同意"},
+		{"頭髮出發現", "头发出发现"},
+		{"乾燥乾隆", "干燥乾隆"}, // 乾: word-level disambiguation
+	}
+	for _, c := range cases {
+		if got := ToSimplified(c[0]); got != c[1] {
+			t.Errorf("ToSimplified(%q) = %q, want %q", c[0], got, c[1])
+		}
+	}
+}
+
 // The web keyword search (/search?f=actor) must hit actors by alias, and the
 // client must retry a simplified keyword with its traditional rewrite.
 func TestClientSearchActorsWebKeywordAndSimplifiedFallback(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"videoviewer/pkg/javdb"
 	"videoviewer/pkg/subs"
@@ -107,7 +108,7 @@ func (s *Server) handleSubtitlesAuto(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		got, derr := c.Download(ctx, it.Source, it.Ref, it.Lang)
-		if derr == nil && len(got.Body) > 0 {
+		if derr == nil && len(got.Body) > 0 && subtitleUsable(got.Body) {
 			pick = it
 			downloaded = got
 			break
@@ -167,6 +168,25 @@ func simplifySubtitle(lang string, data []byte) []byte {
 		return data
 	}
 	return []byte(javdb.ToSimplified(string(data)))
+}
+
+// subtitleUsable rejects payloads dominated by U+FFFD replacement characters:
+// some upstream subtitle files were transcoded badly at the source and arrive
+// as "valid" UTF-8 full of U+FFFD — no decoding can recover them, so auto must
+// treat them as failures and fall through to the next candidate. A tiny
+// fraction of damaged lines is tolerated (<0.5%).
+func subtitleUsable(b []byte) bool {
+	runes := []rune(string(b))
+	if len(runes) == 0 {
+		return false
+	}
+	bad := 0
+	for _, r := range runes {
+		if r == utf8.RuneError {
+			bad++
+		}
+	}
+	return bad*200 < len(runes)
 }
 
 // langRank mirrors pkg/subs ranking at the endpoint level: zh < en < ja < rest.
