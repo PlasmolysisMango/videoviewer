@@ -609,6 +609,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             actors.add(Actor(
               id: (a['id'] as String?) ?? '',
               name: name,
+              // 带上头像：JavDB 详情页演员块含 avatar_url，否则演员页
+              // 头部资料卡只有占位图标。
+              avatarUrl: a['avatar_url'] as String?,
             ));
           }
         }
