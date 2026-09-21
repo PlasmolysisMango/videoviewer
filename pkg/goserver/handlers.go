@@ -1018,8 +1018,20 @@ func (s *Server) handleAVResolve(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// avProbeTTL 是探测结果的缓存时长：详情页每次进入都会触发逐源探测，
+// 而上游站点抓取明显偏重；同一番号+源的探测结果（可用变体列表）
+// 短时间变化很小，10 分钟内直接复用。
+const avProbeTTL = 10 * time.Minute
+
+// avProbeEntry 是缓存中的一条探测结果。
+type avProbeEntry struct {
+	result  *av.ProbeResult
+	expires time.Time
+}
+
 // handleAVProbe 轻量探测番号的可用变体（仅抓取 HTML，不拉取播放列表）。
 // 用于前端在详情页快速展示变体按钮，用户点击后才按需调用 resolve。
+// 结果按 (source, code) 做短时缓存（avProbeTTL）。
 func (s *Server) handleAVProbe(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 5 {
@@ -1029,11 +1041,38 @@ func (s *Server) handleAVProbe(w http.ResponseWriter, r *http.Request) {
 	code := parts[4]
 	source := r.URL.Query().Get("source")
 
-	result, err := s.av.Probe(r.Context(), code, source)
+	key := source + "|" + code
+	s.avProbeMu.Lock()
+	if ent, ok := s.avProbeCache[key]; ok && time.Now().Before(ent.expires) {
+		s.avProbeMu.Unlock()
+		writeJSON(w, http.StatusOK, ent.result)
+		return
+	}
+	s.avProbeMu.Unlock()
+
+	// 总超时兜底：上游站点全不可达时，逐源探测（3 源×单源 25s）会挂
+	// 75s+；服务器侧 40s 快速失败，前端好尽早进入“无播放源”降级。
+	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	defer cancel()
+	result, err := s.av.Probe(ctx, code, source)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	s.avProbeMu.Lock()
+	if s.avProbeCache == nil {
+		s.avProbeCache = make(map[string]avProbeEntry)
+	}
+	// 惰性清理：写入时顺手摘掉过期条目，控制长期运行的内存占用。
+	now := time.Now()
+	for k, e := range s.avProbeCache {
+		if now.After(e.expires) {
+			delete(s.avProbeCache, k)
+		}
+	}
+	s.avProbeCache[key] = avProbeEntry{result: result, expires: now.Add(avProbeTTL)}
+	s.avProbeMu.Unlock()
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -1131,7 +1170,10 @@ func (s *Server) handleAVDetail(w http.ResponseWriter, r *http.Request) {
 	code := parts[4]
 	source := r.URL.Query().Get("source")
 
-	video, err := s.av.Detail(r.Context(), code, source)
+	// 总超时兜底（同 handleAVProbe）：上游不可达时快速失败。
+	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	defer cancel()
+	video, err := s.av.Detail(ctx, code, source)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

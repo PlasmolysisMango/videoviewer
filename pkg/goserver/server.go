@@ -62,6 +62,11 @@ type Server struct {
 	httpServer *http.Server
 	mu         sync.Mutex
 	running    bool
+
+	// AV 探测结果缓存（key="source|code"，见 handleAVProbe）：上游站点
+	// 抓取重而探测结果变化慢，详情页反复进出时复用。
+	avProbeMu    sync.Mutex
+	avProbeCache map[string]avProbeEntry
 }
 
 // New creates a new Server with the given configuration.
