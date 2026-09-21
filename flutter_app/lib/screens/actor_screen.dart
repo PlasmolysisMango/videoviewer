@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../providers/subscription_provider.dart';
 import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/image_url.dart';
@@ -33,6 +34,7 @@ class _ActorScreenState extends State<ActorScreen> {
   bool _isLoading = true;
   bool _isLoadingMore = false;
   bool _hasMore = true;
+  bool _subToggling = false; // 订阅按钮切换中
   int _page = 1;
   String? _error;
 
@@ -40,6 +42,7 @@ class _ActorScreenState extends State<ActorScreen> {
   void initState() {
     super.initState();
     _client = JavDBClient(BackendLauncher.baseUrl);
+    context.read<SubscriptionProvider>().ensureLoaded();
     _loadFirstPage();
     _scrollController.addListener(_onScroll);
   }
@@ -133,6 +136,36 @@ class _ActorScreenState extends State<ActorScreen> {
             ?.map((m) => Movie.fromJson(m as Map<String, dynamic>))
             .toList() ??
         const <Movie>[];
+  }
+
+  /// 订阅/取消订阅当前演员（演员页此前没有任何订阅入口，从搜索等入口
+  /// 进来的用户无处订阅；收藏页已有的订阅可直接取消）。
+  Future<void> _toggleSubscribe() async {
+    if (_subToggling) return;
+    final subs = context.read<SubscriptionProvider>();
+    final subscribed = subs.isSubscribed(kSubActor, widget.actor.id);
+    setState(() => _subToggling = true);
+    try {
+      if (subscribed) {
+        await subs.unsubscribe(kSubActor, widget.actor.id);
+        if (mounted) _toast('已取消订阅');
+      } else {
+        await subs.subscribeActor(widget.actor.id, widget.actor.name,
+            avatar: widget.actor.avatarUrl);
+        if (mounted) _toast('已订阅，可在首页查看');
+      }
+    } catch (e) {
+      AppLogger.error('Failed to toggle actor subscription', e);
+      if (mounted) _toast('操作失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _subToggling = false);
+    }
+  }
+
+  void _toast(String msg, {bool error = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: error ? Colors.red : null),
+    );
   }
 
   @override
@@ -273,9 +306,12 @@ class _ActorScreenState extends State<ActorScreen> {
     );
   }
 
-  /// 头部资料卡：头像 + 名字 + 作品数。
+  /// 头部资料卡：头像 + 名字 + 作品数 + 订阅按钮。
   Widget _buildHeader(BuildContext context) {
     final avatar = widget.actor.avatarUrl;
+    final subscribed = context
+        .watch<SubscriptionProvider>()
+        .isSubscribed(kSubActor, widget.actor.id);
     return SliverToBoxAdapter(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -326,6 +362,23 @@ class _ActorScreenState extends State<ActorScreen> {
                         '${widget.actor.videosCount} 部作品',
                         style: TextStyle(
                             fontSize: 13, color: Theme.of(context).hintColor),
+                      ),
+                    ],
+                    // 订阅键：无 id 的演员（理论上不会有）不展示。
+                    if (widget.actor.id.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      FilledButton.tonalIcon(
+                        onPressed: _subToggling ? null : _toggleSubscribe,
+                        icon: Icon(
+                            subscribed
+                                ? Icons.bookmark_added
+                                : Icons.bookmark_add_outlined,
+                            size: 18),
+                        label: Text(subscribed ? '已订阅' : '订阅'),
+                        style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                        ),
                       ),
                     ],
                   ],
