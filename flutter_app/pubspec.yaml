@@ -1,7 +1,7 @@
 name: javdb_app
 description: JavDB video search, playback, and download app.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -27,3 +27,13 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+# 画面拉伸修复：video_player_android 2.8.15~2.12.1 会把变形宽高比视频
+# （anamorphic，PAR≠1）的 coded size 当作显示尺寸上报，导致画面被拉伸
+# （flutter/flutter#132934）。官方在 2.12.2 修复，但该版要求 Flutter >= 3.44
+# （本项目 CI 为 3.32.5），故 vendor 2.8.15 并回移官方修复，见
+# third_party/video_player_android 中 TextureExoPlayerEventListener 的
+# [videoviewer] 补丁块。待 Flutter SDK 升级到 3.44+ 后可移除本 override。
+dependency_overrides:
+  video_player_android:
+    path: ../third_party/video_player_android
