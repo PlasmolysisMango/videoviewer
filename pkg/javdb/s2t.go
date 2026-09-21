@@ -527,6 +527,15 @@ var t2s = func() map[rune]rune {
 	return m
 }()
 
+// extVariants 把常见的 CJK 扩展区（B 区）异体字归一到标准字形。
+// Android/Flutter 系统字体不含扩展区字形，字幕里的 𫔭（開的异体，
+// 台繁字幕源高频）会渲染成豆腐块，用户视为乱码；先归一化再走简繁
+// 映射。目标直接给简体字形，未收录的扩展区字符保持原样。
+var extVariants = map[rune]rune{
+	0x2B52D: '开', // 𫔭 開的异体
+	0x20BB7: '吉', // 𠮷 吉的异体
+}
+
 // ToSimplified rewrites traditional Chinese chars to simplified ones, leaving
 // any other rune (kana, latin, digits) untouched. JavDB serves traditional
 // Chinese genre names ("癡女", "高校生"); the app displays simplified
@@ -535,6 +544,11 @@ func ToSimplified(s string) string {
 	out := []rune(s)
 	changed := false
 	for i, r := range out {
+		if t, ok := extVariants[r]; ok {
+			out[i] = t
+			changed = true
+			continue
+		}
 		if t, ok := t2s[r]; ok {
 			out[i] = t
 			changed = true

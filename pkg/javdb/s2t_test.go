@@ -23,6 +23,23 @@ func TestToTraditional(t *testing.T) {
 	}
 }
 
+// Extension-B variant glyphs (e.g. 𫔭 for 開/开) have no glyphs in
+// Android/Flutter system fonts and render as tofu; ToSimplified must
+// normalize them to standard simplified characters.
+func TestToSimplifiedExtVariants(t *testing.T) {
+	cases := [][2]string{
+		{"\U0002B52D心", "开心"}, // 𫔭 → 开
+		{"张\U0002B52D", "张开"},
+		{"\U00020BB7日", "吉日"}, // 𠮷 → 吉
+		{"很高興\U0002B52D心", "很高兴开心"},
+	}
+	for _, c := range cases {
+		if got := ToSimplified(c[0]); got != c[1] {
+			t.Errorf("ToSimplified(%q) = %q, want %q", c[0], got, c[1])
+		}
+	}
+}
+
 // The web keyword search (/search?f=actor) must hit actors by alias, and the
 // client must retry a simplified keyword with its traditional rewrite.
 func TestClientSearchActorsWebKeywordAndSimplifiedFallback(t *testing.T) {
