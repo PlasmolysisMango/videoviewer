@@ -867,6 +867,47 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleTagsResolve 把影片详情页的类型标签解析成题材页坐标（/api/genre 的
+// group+tag）：详情标签带 app 端全局唯一 tag id，但缺 web 筛选组号；题材库
+// （/v1/tags）提供分组归属。先按 id 精确匹配、未命中再按名称兜底（个别片源
+// tag id 与题材库不同步）；找不到返回 404，前端据此降级为关键词搜索。
+func (s *Server) handleTagsResolve(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if name == "" && id == "" {
+		writeError(w, http.StatusBadRequest, "name or id required")
+		return
+	}
+	groups, err := s.javdb.TagGroups(r.Context(), "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 两轮匹配：id（最精确）优先，名称兜底；main/year 等非题材浏览组跳过。
+	for _, byID := range []bool{true, false} {
+		if (byID && id == "") || (!byID && name == "") {
+			continue
+		}
+		for _, g := range groups {
+			web, ok := javdb.WebTagGroupID[g.CategoryID]
+			if !ok {
+				continue
+			}
+			for _, o := range g.Options {
+				if (byID && o.ID == id) || (!byID && o.Name == name) {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"group": web,
+						"tag":   o.ID,
+						"name":  o.Name,
+					})
+					return
+				}
+			}
+		}
+	}
+	writeError(w, http.StatusNotFound, "tag not found")
+}
+
 // handleGenre serves tag-scoped browsing: /api/genre?group=2&tag=1&page=.
 // 题材浏览由 app 端 /v1/movies/tags 承载（tag id 全局唯一，group 键仅作
 // 兼容保留），无需网页版登录态；app API 不可用时客户端自动回退 web 端。

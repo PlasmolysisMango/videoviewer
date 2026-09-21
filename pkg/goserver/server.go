@@ -178,6 +178,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/ranking/", s.handleRanking)
 	mux.HandleFunc("GET /api/magnets/", s.handleMagnets)
 	mux.HandleFunc("GET /api/tags", s.handleTags)
+	mux.HandleFunc("GET /api/tags/resolve", s.handleTagsResolve)
 	mux.HandleFunc("GET /api/genre", s.handleGenre)
 	mux.HandleFunc("POST /api/web-cookie", s.handleWebCookie)
 	mux.HandleFunc("GET /api/actor/", s.handleActor)

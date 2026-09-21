@@ -16,6 +16,7 @@ import '../services/logger.dart';
 import '../services/subtitle_service.dart';
 import '../widgets/common_ui.dart';
 import '../widgets/subtitle_picker.dart';
+import 'genre_screen.dart';
 import 'hls_player.dart';
 import 'search_screen.dart';
 import 'video_player_screen.dart';
@@ -77,6 +78,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   // 字幕搜索状态：检查中（转圈提示）→ 完成（区分成功与无结果提示）。
   bool _subtitleChecking = false;
   bool _subtitleChecked = false;
+  // 类型标签点击的题材解析中（防重复点击与重复导航）。
+  bool _openingTag = false;
 
   @override
   void initState() {
@@ -160,8 +163,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     try {
       AppLogger.info('Loading movie: ${widget.movieId}');
       final result = await _client.getMovie(widget.movieId);
-      unawaited(DataCache.instance
-          .write('movie.${widget.movieId}', result));
+      unawaited(DataCache.instance.write('movie.${widget.movieId}', result));
       if (!mounted) return;
       setState(() => _applyMovieData(result));
     } catch (e) {
@@ -186,8 +188,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         magnetsList.addAll(magnetsData
             .map((m) => Magnet.fromJson((m as Map).cast<String, dynamic>())));
       } else if (magnetsData is Map) {
-        magnetsList
-            .add(Magnet.fromJson(magnetsData.cast<String, dynamic>()));
+        magnetsList.add(Magnet.fromJson(magnetsData.cast<String, dynamic>()));
       }
     }
 
@@ -221,9 +222,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     final urls = <String>[];
     final cover = m['cover_url'] as String?;
     if (cover != null && cover.isNotEmpty) urls.add(cover);
-    final previews =
-        (m['preview_images'] as List<dynamic>?)?.cast<String>() ??
-            const <String>[];
+    final previews = (m['preview_images'] as List<dynamic>?)?.cast<String>() ??
+        const <String>[];
     urls.addAll(previews.where((u) => u.isNotEmpty));
     return urls;
   }
@@ -233,8 +233,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     if (!mounted) return;
     final urls = _galleryUrls();
     for (final u in urls.take(4)) {
-      precacheImage(
-          CachedNetworkImageProvider(resolveImageUrl(u)), context);
+      precacheImage(CachedNetworkImageProvider(resolveImageUrl(u)), context);
     }
   }
 
@@ -257,7 +256,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   Future<void> _loadAvData() async {
     try {
       final source = _selectedSource.isNotEmpty ? _selectedSource : null;
-      AppLogger.info('Loading AV data for: ${widget.movieNumber}, source=$source');
+      AppLogger.info(
+          'Loading AV data for: ${widget.movieNumber}, source=$source');
       final result = await _client.avDetail(widget.movieNumber, source: source);
       setState(() {
         _avData = result['video'] as Map<String, dynamic>?;
@@ -409,8 +409,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         height: 48,
         padding: const EdgeInsets.symmetric(horizontal: 14),
         decoration: BoxDecoration(
-          border: Border.all(
-              color: Theme.of(context).colorScheme.outlineVariant),
+          border:
+              Border.all(color: Theme.of(context).colorScheme.outlineVariant),
           borderRadius: BorderRadius.circular(14),
         ),
         child: Row(
@@ -418,8 +418,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           children: [
             Text(
               '片源',
-              style: TextStyle(
-                  fontSize: 13, color: Theme.of(context).hintColor),
+              style:
+                  TextStyle(fontSize: 13, color: Theme.of(context).hintColor),
             ),
             const SizedBox(width: 6),
             Text(
@@ -444,8 +444,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         height: 48,
         padding: const EdgeInsets.symmetric(horizontal: 14),
         decoration: BoxDecoration(
-          border: Border.all(
-              color: Theme.of(context).colorScheme.outlineVariant),
+          border:
+              Border.all(color: Theme.of(context).colorScheme.outlineVariant),
           borderRadius: BorderRadius.circular(14),
         ),
         child: Row(
@@ -481,8 +481,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
         height: 48,
         padding: const EdgeInsets.symmetric(horizontal: 14),
         decoration: BoxDecoration(
-          border: Border.all(
-              color: Theme.of(context).colorScheme.outlineVariant),
+          border:
+              Border.all(color: Theme.of(context).colorScheme.outlineVariant),
           borderRadius: BorderRadius.circular(14),
         ),
         child: Row(
@@ -490,8 +490,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
           children: [
             Text(
               '变体',
-              style: TextStyle(
-                  fontSize: 13, color: Theme.of(context).hintColor),
+              style:
+                  TextStyle(fontSize: 13, color: Theme.of(context).hintColor),
             ),
             const SizedBox(width: 6),
             Text(
@@ -597,6 +597,79 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
+  /// 类型标签点击：先解析题材坐标（tag id 全局唯一，题材库补上 web 分组），
+  /// 成功直达题材页；解析不到（非题材标签/上游失败）降级关键词搜索。
+  Future<void> _openTag(String name, String id) async {
+    if (_openingTag) return;
+    setState(() => _openingTag = true);
+    Map<String, dynamic>? resolved;
+    try {
+      resolved = await _client.resolveTag(name, id: id);
+    } catch (e) {
+      AppLogger.warning('Resolve tag failed: $e');
+    } finally {
+      if (mounted) setState(() => _openingTag = false);
+    }
+    if (!mounted) return;
+    final r = resolved;
+    final group = (r?['group'] as String?) ?? '';
+    final tag = (r?['tag'] as String?) ?? '';
+    if (r == null || group.isEmpty || tag.isEmpty) {
+      _openSearch(name);
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => GenreScreen(
+          groupId: group,
+          tagId: tag,
+          title: (r['name'] as String?) ?? name,
+        ),
+      ),
+    );
+  }
+
+  /// 类型标签区：与 _buildChipSection 不同，这里保留每个标签的 id（题材
+  /// 解析必需），点击直达题材页，找不到再降级搜索。
+  Widget _buildTagSection(dynamic tags) {
+    final items = <(String, String)>[];
+    for (final t in (tags as List?) ?? const []) {
+      if (t is! Map) continue;
+      final n = t['name'];
+      if (n is String && n.isNotEmpty) {
+        items.add((n, (t['id'] as String?) ?? ''));
+      }
+    }
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('类型标签',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: items
+                .map((e) => ActionChip(
+                      label: Text(e.$1,
+                          style: TextStyle(
+                              fontSize: 13,
+                              color: Theme.of(context).colorScheme.primary)),
+                      side: BorderSide(color: Theme.of(context).dividerColor),
+                      onPressed:
+                          _openingTag ? null : () => _openTag(e.$1, e.$2),
+                    ))
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 可点击标签区：点击任一项跳搜索页查找相关影片。
   /// 演员区：chip 点击进演员专题页（无 id 时回退关键词搜索）。
   Widget _buildActorSection(dynamic credits) {
@@ -697,7 +770,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   /// 收藏按钮：♥收藏 = JavDB "想看"标记（与登录账号双向同步，本地缓存）。
   Widget _buildFavButton(BuildContext context) {
     final userState = context.watch<UserStateProvider>();
-    final movie = _movieData ?? {'id': widget.movieId, 'number': widget.movieNumber};
+    final movie =
+        _movieData ?? {'id': widget.movieId, 'number': widget.movieNumber};
     final fav = userState.isWantWatch(widget.movieId);
     return IconButton(
       icon: Icon(
@@ -712,7 +786,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   /// 看过按钮：JavDB "看过"标记（与登录账号双向同步）。
   Widget _buildWatchedButton(BuildContext context) {
     final userState = context.watch<UserStateProvider>();
-    final movie = _movieData ?? {'id': widget.movieId, 'number': widget.movieNumber};
+    final movie =
+        _movieData ?? {'id': widget.movieId, 'number': widget.movieNumber};
     final watched = userState.isWatched(widget.movieId);
     return IconButton(
       icon: Icon(
@@ -809,8 +884,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
                                         content: Text('已从「$name」移除'),
-                                        duration:
-                                            const Duration(seconds: 1)),
+                                        duration: const Duration(seconds: 1)),
                                   );
                                 }
                               } catch (e) {
@@ -903,8 +977,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                       child: SizedBox(
                           width: 22,
                           height: 22,
-                          child:
-                              CircularProgressIndicator(strokeWidth: 2)),
+                          child: CircularProgressIndicator(strokeWidth: 2)),
                     ),
                     errorWidget: (_, __, ___) =>
                         const Icon(Icons.movie, size: 100),
@@ -920,8 +993,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             right: 12,
             bottom: 12,
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
                 color: Colors.black45,
                 borderRadius: BorderRadius.circular(12),
@@ -1008,9 +1080,10 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          // 演员/类型/系列等可点击标签：演员进专题页，其余跳搜索
+          // 演员进入专题页；类型标签直达题材页（解析不到才降级搜索）；
+          // 系列/片商/发行商无题材页，仍跳搜索。
           _buildActorSection(movie['actor_credits']),
-          _buildChipSection('类型标签', _linkNames(movie['tags'])),
+          _buildTagSection(movie['tags']),
           _buildChipSection('系列 / 片商 / 发行商', [
             ..._linkNames(movie['series']),
             ..._linkNames(movie['maker']),
@@ -1040,8 +1113,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                   SizedBox(width: 5),
-                  Text('搜索字幕中…',
-                      style: TextStyle(fontSize: 12)),
+                  Text('搜索字幕中…', style: TextStyle(fontSize: 12)),
                 ],
               ),
             )
@@ -1343,11 +1415,12 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       children: [
         Row(
           children: [
-            Text(_serverReviewTotal > 0
+            Text(
+                _serverReviewTotal > 0
                     ? '评论 ($_serverReviewTotal)'
                     : (_reviewTotal > 0 ? '评论 ($_reviewTotal)' : '评论'),
-                style: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.bold)),
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             const Spacer(),
             SegmentedButton<String>(
               segments: const [
@@ -1432,12 +1505,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
             children: [
               CircleAvatar(
                 radius: 12,
-                backgroundColor: Theme.of(context)
-                    .colorScheme
-                    .primary
-                    .withOpacity(0.15),
-                child: Text(
-                    author.isNotEmpty ? author.substring(0, 1) : '?',
+                backgroundColor:
+                    Theme.of(context).colorScheme.primary.withOpacity(0.15),
+                child: Text(author.isNotEmpty ? author.substring(0, 1) : '?',
                     style: const TextStyle(fontSize: 11)),
               ),
               const SizedBox(width: 8),
@@ -1450,8 +1520,8 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
               ),
               if (rating > 0)
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: Colors.orange,
                     borderRadius: BorderRadius.circular(10),
@@ -1479,8 +1549,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
                   if (date.isNotEmpty)
                     Text(date,
                         style: TextStyle(
-                            color: Theme.of(context).hintColor,
-                            fontSize: 11)),
+                            color: Theme.of(context).hintColor, fontSize: 11)),
                   const Spacer(),
                   if (likes > 0)
                     Row(

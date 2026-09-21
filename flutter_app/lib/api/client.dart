@@ -44,7 +44,10 @@ class JavDBClient {
   /// 影片/演员搜索：scope 传 'movie'（默认）或 'actor'。
   /// sort 可选：relevance / newest / oldest / highest / lowest / most_magnets。
   Future<Map<String, dynamic>> search(String query,
-      {int page = 1, int limit = 20, String scope = 'movie', String? sort}) async {
+      {int page = 1,
+      int limit = 20,
+      String scope = 'movie',
+      String? sort}) async {
     final params = <String, String>{
       'q': query,
       'page': page.toString(),
@@ -54,7 +57,8 @@ class JavDBClient {
     if (sort != null && sort.isNotEmpty) {
       params['sort'] = sort;
     }
-    final uri = Uri.parse('$baseUrl/api/search').replace(queryParameters: params);
+    final uri =
+        Uri.parse('$baseUrl/api/search').replace(queryParameters: params);
     final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
@@ -68,8 +72,8 @@ class JavDBClient {
   /// 获取影片详情。cast=true 仅拉详情（跳过磁链查询），
   /// 供搜索结果渐进补演员使用，速度快得多。
   Future<Map<String, dynamic>> getMovie(String id, {bool cast = false}) async {
-    final uri = Uri.parse('$baseUrl/api/movie/$id').replace(
-        queryParameters: cast ? {'cast': '1'} : null);
+    final uri = Uri.parse('$baseUrl/api/movie/$id')
+        .replace(queryParameters: cast ? {'cast': '1'} : null);
     final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
@@ -153,7 +157,8 @@ class JavDBClient {
   /// 搜索 JavDB 社区影单（合集）：/api/lists/search?q=
   Future<List<Map<String, dynamic>>> searchLists(String query,
       {int page = 1}) async {
-    final uri = Uri.parse('$baseUrl/api/lists/search').replace(queryParameters: {
+    final uri =
+        Uri.parse('$baseUrl/api/lists/search').replace(queryParameters: {
       'q': query,
       'page': page.toString(),
     });
@@ -277,7 +282,8 @@ class JavDBClient {
   }
 
   /// 标记影片为想看/看过（与 JavDB 账号同步）。
-  Future<Map<String, dynamic>> setUserMark(String movieId, String status) async {
+  Future<Map<String, dynamic>> setUserMark(
+      String movieId, String status) async {
     final response = await _http.post(
       Uri.parse('$baseUrl/api/user/marks'),
       headers: _headers,
@@ -420,7 +426,8 @@ class JavDBClient {
     if (sort != null && sort.isNotEmpty) {
       params['sort'] = sort;
     }
-    final uri = Uri.parse('$baseUrl/api/genre').replace(queryParameters: params);
+    final uri =
+        Uri.parse('$baseUrl/api/genre').replace(queryParameters: params);
     final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
@@ -429,6 +436,24 @@ class JavDBClient {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'Get genre movies failed');
     }
+  }
+
+  /// 把详情页类型标签解析成题材页坐标（group+tag）：详情标签有 app 端
+  /// 全局唯一 tag id，分组号由题材库补齐。题材库找不到时返回 null
+  /// （调用方降级关键词搜索），其余错误上抛由调用方兜底。
+  Future<Map<String, dynamic>?> resolveTag(String name, {String? id}) async {
+    final params = <String, String>{'name': name};
+    if (id != null && id.isNotEmpty) params['id'] = id;
+    final uri =
+        Uri.parse('$baseUrl/api/tags/resolve').replace(queryParameters: params);
+    final response = await _http.get(uri, headers: _headers);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    if (response.statusCode == 404) return null;
+    final error = jsonDecode(response.body);
+    throw Exception(error['error'] ?? 'Resolve tag failed');
   }
 
   /// 导入网页版登录 Cookie（解锁题材浏览等登录墙页面）。
@@ -461,10 +486,7 @@ class JavDBClient {
   /// 演员的作品列表（演员专题页），支持分页和排序。
   /// sort 可选：newest / oldest / highest / most_magnets。
   Future<Map<String, dynamic>> actorMovies(String actorId,
-      {int page = 1,
-      int limit = 20,
-      String? sort,
-      String? mode}) async {
+      {int page = 1, int limit = 20, String? sort, String? mode}) async {
     final params = <String, String>{
       'page': page.toString(),
       'limit': limit.toString(),
@@ -520,8 +542,8 @@ class JavDBClient {
       params['source'] = source;
     }
 
-    final uri = Uri.parse('$baseUrl/api/av/search')
-        .replace(queryParameters: params);
+    final uri =
+        Uri.parse('$baseUrl/api/av/search').replace(queryParameters: params);
     final response = await _http.get(uri, headers: _headers);
 
     if (response.statusCode == 200) {
@@ -550,7 +572,8 @@ class JavDBClient {
     }
   }
 
-  Future<Map<String, dynamic>> avResolve(String code, {String? source, String? variant}) async {
+  Future<Map<String, dynamic>> avResolve(String code,
+      {String? source, String? variant}) async {
     final params = <String, String>{};
     if (source != null && source.isNotEmpty) {
       params['source'] = source;
@@ -594,11 +617,13 @@ class JavDBClient {
   /// 注入 Cloudflare cf_clearance Cookie，后续请求自动携带。
   Future<void> avSetCFCookie(String host, String cookie, {String? ua}) async {
     final uri = Uri.parse('$baseUrl/api/av/cf-cookie');
-    final response = await _http.post(uri, headers: _headers, body: jsonEncode({
-      'host': host,
-      'cookie': cookie,
-      if (ua != null) 'ua': ua,
-    }));
+    final response = await _http.post(uri,
+        headers: _headers,
+        body: jsonEncode({
+          'host': host,
+          'cookie': cookie,
+          if (ua != null) 'ua': ua,
+        }));
 
     if (response.statusCode != 200) {
       final error = jsonDecode(response.body);
