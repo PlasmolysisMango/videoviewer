@@ -209,6 +209,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/downloads/{id}/file", s.handleDownloadFile)
 	mux.HandleFunc("DELETE /api/downloads/{id}", s.handleDownloadDelete)
 	mux.HandleFunc("POST /api/downloads/{id}/cancel", s.handleDownloadCancel)
+	mux.HandleFunc("POST /api/downloads/{id}/pause", s.handleDownloadPause)
+	mux.HandleFunc("POST /api/downloads/{id}/resume", s.handleDownloadResume)
 	mux.HandleFunc("POST /api/downloads/{id}/retry", s.handleDownloadRetry)
 	mux.HandleFunc("POST /api/downloads/config", s.handleDownloadConfig)
 	// Subtitle endpoints (pkg/subs: subtitlecat / avsubtitles / scanlover)

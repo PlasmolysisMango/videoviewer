@@ -357,6 +357,7 @@ class DownloadTask {
   }
 
   bool get isActive => status == 'queued' || status == 'running';
+  bool get isPaused => status == 'paused';
   bool get isDone => status == 'done';
 
   String get statusLabel {
@@ -371,6 +372,8 @@ class DownloadTask {
         return '失败';
       case 'canceled':
         return '已取消';
+      case 'paused':
+        return '已暂停';
       default:
         return status;
     }

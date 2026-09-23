@@ -12,7 +12,7 @@ import '../services/logger.dart';
 import '../widgets/common_ui.dart';
 import 'video_player_screen.dart';
 
-/// 下载管理页：任务列表（进度轮询）、取消/重试/删除，点已完成任务直接播放。
+/// 下载管理页：任务列表（进度轮询）、暂停/继续/取消/重试/删除，点已完成任务直接播放。
 ///
 /// 后端为异步队列（见 pkg/goserver/downloads.go）：任务只记录 code/源/
 /// 变体/清晰度，下载时重新解析播放流；已完成的文件经后端 /file 端点
@@ -118,6 +118,26 @@ class _DownloadsScreenState extends State<DownloadsScreen>
     _refresh();
   }
 
+  Future<void> _pause(DownloadTask t) async {
+    try {
+      await _client.pauseDownload(t.id);
+    } catch (e) {
+      AppLogger.warning('Pause download failed: $e');
+      _toast('暂停失败: $e');
+    }
+    _refresh();
+  }
+
+  Future<void> _resume(DownloadTask t) async {
+    try {
+      await _client.resumeDownload(t.id);
+    } catch (e) {
+      AppLogger.warning('Resume download failed: $e');
+      _toast('继续失败: $e');
+    }
+    _refresh();
+  }
+
   /// 删除任务：已完成的询问是否同时删除文件；进行中的先确认。
   Future<void> _confirmDelete(DownloadTask t) async {
     var deleteFile = false;
@@ -145,12 +165,13 @@ class _DownloadsScreenState extends State<DownloadsScreen>
       );
       if (choice == null || choice == 'cancel') return;
       deleteFile = choice == 'file';
-    } else if (t.isActive) {
+    } else if (t.isActive || t.isPaused) {
       final ok = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('删除任务'),
-          content: const Text('该任务正在下载，删除将中断下载，是否继续？'),
+          content: Text(
+              t.isPaused ? '该任务已暂停，删除将中断任务，是否继续？' : '该任务正在下载，删除将中断下载，是否继续？'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
@@ -367,7 +388,7 @@ class _DownloadsScreenState extends State<DownloadsScreen>
               ),
             ],
           ),
-          if (t.isActive || t.isDone) ...[
+          if (t.isActive || t.isPaused || t.isDone) ...[
             const SizedBox(height: 8),
             _progressBar(t),
           ],
@@ -404,6 +425,7 @@ class _DownloadsScreenState extends State<DownloadsScreen>
       'done' => ('已完成', Colors.green),
       'failed' => ('失败', theme.colorScheme.error),
       'canceled' => ('已取消', theme.hintColor),
+      'paused' => ('已暂停', Colors.orange),
       _ => (t.status, theme.hintColor),
     };
     return Container(
@@ -462,6 +484,8 @@ class _DownloadsScreenState extends State<DownloadsScreen>
           switch (t.status) {
             'running' =>
               t.totalSegments > 0 ? '${(t.progress * 100).round()}%' : '准备中…',
+            'paused' =>
+              t.totalSegments > 0 ? '${(t.progress * 100).round()}%' : '',
             'done' => '100%',
             _ => '',
           },
@@ -471,7 +495,8 @@ class _DownloadsScreenState extends State<DownloadsScreen>
     );
   }
 
-  /// 操作按钮：播放（已完成）/ 重试（失败/取消）/ 取消（进行中）/ 删除（全部）。
+  /// 操作按钮：播放（已完成）/ 重试（失败/取消）/ 暂停（进行中）/ 继续（已暂停）/
+  /// 取消（未结束）/ 删除（全部）。
   Widget _actionButtons(DownloadTask t) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -489,6 +514,18 @@ class _DownloadsScreenState extends State<DownloadsScreen>
             label: const Text('重试'),
           ),
         if (t.isActive)
+          TextButton.icon(
+            onPressed: () => _pause(t),
+            icon: const Icon(Icons.pause, size: 18),
+            label: const Text('暂停'),
+          ),
+        if (t.isPaused)
+          TextButton.icon(
+            onPressed: () => _resume(t),
+            icon: const Icon(Icons.play_arrow, size: 18),
+            label: const Text('继续'),
+          ),
+        if (t.isActive || t.isPaused)
           TextButton.icon(
             onPressed: () => _cancel(t),
             icon: const Icon(Icons.close, size: 18),

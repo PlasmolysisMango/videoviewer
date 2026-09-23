@@ -728,6 +728,26 @@ class JavDBClient {
     }
   }
 
+  /// 暂停任务（排队中/下载中）：中断下载并保留断点，可继续续传。
+  Future<void> pauseDownload(String id) async {
+    final uri = Uri.parse('$baseUrl/api/downloads/$id/pause');
+    final response = await _http.post(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Pause download failed');
+    }
+  }
+
+  /// 继续已暂停的任务（从断点续传，不重置进度）。
+  Future<void> resumeDownload(String id) async {
+    final uri = Uri.parse('$baseUrl/api/downloads/$id/resume');
+    final response = await _http.post(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Resume download failed');
+    }
+  }
+
   /// 重试失败/已取消的任务。
   Future<void> retryDownload(String id) async {
     final uri = Uri.parse('$baseUrl/api/downloads/$id/retry');

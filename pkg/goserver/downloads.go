@@ -19,10 +19,12 @@ import (
 )
 
 // 下载队列：把 pkg/av 的同步整片下载包装为异步任务。任务状态机：
-// queued（排队）→ running（下载中）→ done / failed / canceled。
+// queued（排队）→ running（下载中）→ done / failed / canceled，另有
+// paused（已暂停）：中断时保留 .part 断点，继续时从断点续传。
 // 调度器按 maxConcurrent 并行（默认 1，可在设置中调整），限速对
 // 每个任务的分片下载生效；元数据落盘，重启后历史仍可见（进行中的
-// 任务标记为中断，由用户手动重试，避免重启后自动跑流量）。
+// 任务标记为中断，由用户手动重试，避免重启后自动跑流量；已暂停的
+// 任务保持暂停）。
 
 type downloadStatus string
 
@@ -32,7 +34,23 @@ const (
 	dlStatusDone     downloadStatus = "done"
 	dlStatusFailed   downloadStatus = "failed"
 	dlStatusCanceled downloadStatus = "canceled"
+	dlStatusPaused   downloadStatus = "paused"
 )
+
+// isOccupying 判断状态是否正在占用目标文件（同 code+dir 不允许并发写；
+// 暂停中的任务保留断点与目标文件，同样视为占用）。
+func isOccupying(s downloadStatus) bool {
+	return s == dlStatusQueued || s == dlStatusRunning || s == dlStatusPaused
+}
+
+// interruptStatus 返回被中断任务的终态：Pause 中断落 paused（断点保留，
+// 可继续续传），Cancel 中断落 canceled。
+func interruptStatus(t *downloadTask) downloadStatus {
+	if t.paused {
+		return dlStatusPaused
+	}
+	return dlStatusCanceled
+}
 
 // downloadTask 是一条下载任务。除 cancel 外全部字段由 downloadManager.mu
 // 保护（Progress 回调来自下载 goroutine，同样在锁内更新）。
@@ -56,6 +74,7 @@ type downloadTask struct {
 
 	cancel context.CancelFunc `json:"-"`
 	done   chan struct{}      `json:"-"` // 下载 goroutine 收尾信号（未启动时为 nil）
+	paused bool               `json:"-"` // 中断后期望终态为 paused（Pause 置位）
 }
 
 // downloadManager 管理下载队列：并发调度、进度跟踪与元数据落盘。
@@ -85,7 +104,8 @@ func tasksFile() (string, error) {
 }
 
 // loadTasks 恢复上次的任务列表；进行中的任务统一标记为失败（进程重启
-// 会中断分片下载，文件可能残缺），用户可手动重试。
+// 会中断分片下载，文件可能残缺），用户可手动重试。已暂停的任务保持
+// 暂停（断点文件仍在，继续时续传）。
 func (m *downloadManager) loadTasks() {
 	path, err := tasksFile()
 	if err != nil {
@@ -135,9 +155,8 @@ func (m *downloadManager) Add(t *downloadTask) (*downloadTask, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, e := range m.tasks {
-		if e.Code == t.Code && e.Dir == t.Dir &&
-			(e.Status == dlStatusQueued || e.Status == dlStatusRunning) {
-			return nil, fmt.Errorf("a task for %s is already queued or downloading", t.Code)
+		if e.Code == t.Code && e.Dir == t.Dir && isOccupying(e.Status) {
+			return nil, fmt.Errorf("a task for %s is already queued, paused or downloading", t.Code)
 		}
 	}
 	if t.ID == "" {
@@ -177,8 +196,8 @@ func (m *downloadManager) Get(id string) *downloadTask {
 	return nil
 }
 
-// Cancel 取消任务：排队中的直接标记取消；下载中的中断其 context，
-// 状态由 run 收尾时落为 canceled。
+// Cancel 取消任务：排队中/已暂停的直接标记取消；下载中的中断其 context，
+// 状态由 run 收尾时落为 canceled。取消优先于暂停（清除暂停标记）。
 func (m *downloadManager) Cancel(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -187,16 +206,48 @@ func (m *downloadManager) Cancel(id string) bool {
 			continue
 		}
 		switch t.Status {
-		case dlStatusQueued:
+		case dlStatusQueued, dlStatusPaused:
+			t.paused = false
 			t.Status = dlStatusCanceled
 			t.UpdatedAt = time.Now()
 			m.saveLocked()
 		case dlStatusRunning:
+			t.paused = false
 			if t.cancel != nil {
 				t.cancel()
 			}
 		}
 		return true
+	}
+	return false
+}
+
+// Pause 暂停任务：排队中的直接置为暂停；下载中的中断其 context（断点文件
+// 由 pkg/av 保留），状态由 run 收尾时落为 paused。已暂停的任务重复调用
+// 幂等成功；返回 false 表示任务不存在或当前状态不可暂停。
+func (m *downloadManager) Pause(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.tasks {
+		if t.ID != id {
+			continue
+		}
+		switch t.Status {
+		case dlStatusQueued:
+			t.Status = dlStatusPaused
+			t.UpdatedAt = time.Now()
+			m.saveLocked()
+			return true
+		case dlStatusRunning:
+			t.paused = true
+			if t.cancel != nil {
+				t.cancel()
+			}
+			return true
+		case dlStatusPaused:
+			return true
+		}
+		return false
 	}
 	return false
 }
@@ -284,16 +335,40 @@ func (m *downloadManager) Retry(id string) bool {
 		if t.Status != dlStatusFailed && t.Status != dlStatusCanceled {
 			return false
 		}
-		t.Status = dlStatusQueued
-		t.Error = ""
-		t.Done = 0
-		t.Total = 0
-		t.UpdatedAt = time.Now()
-		m.saveLocked()
-		m.scheduleLocked()
+		m.requeueLocked(t)
 		return true
 	}
 	return false
+}
+
+// Resume 继续已暂停的任务：重新排队，实际下载时从 .part 断点续传。
+func (m *downloadManager) Resume(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.tasks {
+		if t.ID != id {
+			continue
+		}
+		if t.Status != dlStatusPaused {
+			return false
+		}
+		m.requeueLocked(t)
+		return true
+	}
+	return false
+}
+
+// requeueLocked 把任务重置为排队状态并触发调度（Retry/Resume 共用）。
+// 调用方需持有 m.mu。
+func (m *downloadManager) requeueLocked(t *downloadTask) {
+	t.paused = false
+	t.Status = dlStatusQueued
+	t.Error = ""
+	t.Done = 0
+	t.Total = 0
+	t.UpdatedAt = time.Now()
+	m.saveLocked()
+	m.scheduleLocked()
 }
 
 // SetConfig 更新调度配置（并发上限 / 限速）；并发上限提高时立即补位调度。
@@ -374,7 +449,8 @@ func (m *downloadManager) run(t *downloadTask) {
 		t.Done = res.Segments
 		t.Error = ""
 	case canceled:
-		t.Status = dlStatusCanceled
+		t.Status = interruptStatus(t)
+		t.paused = false
 	default:
 		t.Status = dlStatusFailed
 		t.Error = err.Error()
@@ -465,6 +541,24 @@ func (s *Server) handleDownloadGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDownloadCancel(w http.ResponseWriter, r *http.Request) {
 	if !s.dl.Cancel(r.PathValue("id")) {
 		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleDownloadPause 暂停任务（排队中/下载中）：POST /api/downloads/{id}/pause
+func (s *Server) handleDownloadPause(w http.ResponseWriter, r *http.Request) {
+	if !s.dl.Pause(r.PathValue("id")) {
+		writeError(w, http.StatusBadRequest, "task not pausable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleDownloadResume 继续已暂停的任务：POST /api/downloads/{id}/resume
+func (s *Server) handleDownloadResume(w http.ResponseWriter, r *http.Request) {
+	if !s.dl.Resume(r.PathValue("id")) {
+		writeError(w, http.StatusBadRequest, "task not resumable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
