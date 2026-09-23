@@ -787,6 +787,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       builder: (_) => _DownloadSheet(
         title: _movieData?['title'] as String? ?? widget.movieNumber,
         number: widget.movieNumber,
+        source: _selectedSource,
         variants: variants,
         initialVariant: initial,
         resolve: _resolveVariantStreams,
@@ -1704,6 +1705,7 @@ class _ImageViewerScreenState extends State<_ImageViewerScreen> {
 class _DownloadSheet extends StatefulWidget {
   final String title;
   final String number;
+  final String source;
   final List<String> variants;
   final String initialVariant;
   final Future<List<VideoStream>> Function(String variant) resolve;
@@ -1712,6 +1714,7 @@ class _DownloadSheet extends StatefulWidget {
   const _DownloadSheet({
     required this.title,
     required this.number,
+    required this.source,
     required this.variants,
     required this.initialVariant,
     required this.resolve,
@@ -1831,6 +1834,16 @@ class _DownloadSheetState extends State<_DownloadSheet>
               style: TextStyle(fontSize: 12, color: theme.hintColor),
             ),
             const SizedBox(height: 16),
+            // 下载源站点：与创建任务时记录的 source 一致（后端按该源解析）
+            _buildOptionRow(
+              label: '来源',
+              child: Text(
+                _MovieDetailScreenState._sourceLabels[widget.source] ??
+                    widget.source,
+                style: const TextStyle(fontSize: 14),
+              ),
+            ),
+            const SizedBox(height: 8),
             // 变体：始终展示（单变体也显示，明确当前片源的变体）
             _buildOptionRow(
               label: '变体',

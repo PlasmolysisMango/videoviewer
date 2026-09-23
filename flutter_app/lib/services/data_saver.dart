@@ -19,7 +19,7 @@ class DataSaver {
   /// 开关：蜂窝网络下限制加载（默认开）。
   static bool limitOnMobile = true;
 
-  /// 下载速率上限（MB/s），0 = 不限制；默认 2 MB/s。
+  /// 缓存速率上限（MB/s），0 = 不限制；默认 2 MB/s。
   static int speedLimitMbps = 2;
 
   /// 预读上限（秒），0 = 不限制（保持播放器默认）；默认 20 秒。
@@ -42,7 +42,7 @@ class DataSaver {
     await syncToNative();
   }
 
-  /// 修改下载速率上限（MB/s，0 = 不限制）。
+  /// 修改缓存速率上限（MB/s，0 = 不限制）。
   static Future<void> setSpeedLimitMbps(int value) async {
     speedLimitMbps = value < 0 ? 0 : value;
     await _persist(_speedKey, speedLimitMbps);

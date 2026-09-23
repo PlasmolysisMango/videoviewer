@@ -1,12 +1,15 @@
 package com.example.videoviewer
 
 import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
@@ -21,7 +24,11 @@ class MainActivity : FlutterActivity() {
         private const val DEFAULT_ADDR = "127.0.0.1:18888"
         private const val NOTI_PERMISSION_REQ = 1
         private const val STORAGE_PERMISSION_REQ = 2
+        private const val PICK_DIR_REQ = 0x5644 // 文件管理器选择自定义下载目录
     }
+
+    // SAF 目录选择器是异步的：结果返回前挂起 Flutter 回调。
+    private var pendingPickDirResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -69,6 +76,9 @@ class MainActivity : FlutterActivity() {
                 "requestStoragePermission" -> {
                     requestStoragePermission()
                     result.success(null)
+                }
+                "pickDownloadDir" -> {
+                    pickDownloadDir(result)
                 }
                 else -> {
                     result.notImplemented()
@@ -170,7 +180,8 @@ class MainActivity : FlutterActivity() {
         }
 
     /**
-     * 返回可选下载位置：内部存储 / SD 卡（如有）/ 应用私有目录（兜底，无需权限）。
+     * 返回可选下载位置：内部存储（默认）/ 应用私有目录（兜底，无需权限）。
+     * 自定义位置不在此枚举：由用户经系统文件管理器选择（见 pickDownloadDir）。
      */
     private fun storageOptions(): Map<String, Any> {
         val options = mutableListOf<Map<String, Any>>()
@@ -183,16 +194,6 @@ class MainActivity : FlutterActivity() {
                 "available" to true,
             ),
         )
-        sdVolumeRoot()?.let { root ->
-            options.add(
-                mapOf(
-                    "label" to "SD 卡",
-                    "path" to "$root/VideoViewer",
-                    "kind" to "external",
-                    "available" to true,
-                ),
-            )
-        }
         options.add(
             mapOf(
                 "label" to "应用私有目录（无需权限）",
@@ -205,20 +206,6 @@ class MainActivity : FlutterActivity() {
             "granted" to storagePermissionGranted(),
             "options" to options,
         )
-    }
-
-    /**
-     * 可移动存储（SD 卡）卷根路径：从外部私有目录回溯到 /storage/<卷>。
-     * 目录形如 /storage/XXXX-XXXX/Android/data/<pkg>/files。
-     */
-    private fun sdVolumeRoot(): String? {
-        val dirs = getExternalFilesDirs(null)
-        for (i in 1 until dirs.size) {
-            val path = dirs[i]?.absolutePath ?: continue
-            val idx = path.indexOf("/Android/")
-            if (idx > 0) return path.substring(0, idx)
-        }
-        return null
     }
 
     /**
@@ -248,5 +235,83 @@ class MainActivity : FlutterActivity() {
                 STORAGE_PERMISSION_REQ,
             )
         }
+    }
+
+    /** SAF 目录选择结果回调（pickDownloadDir 挂起等待此处返回）。 */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PICK_DIR_REQ) return
+        val result = pendingPickDirResult ?: return
+        pendingPickDirResult = null
+        val treeUri = data?.data
+        if (resultCode != Activity.RESULT_OK || treeUri == null) {
+            result.success(mapOf("status" to "canceled"))
+            return
+        }
+        val path = resolveTreePath(treeUri)
+        if (path == null) {
+            result.success(mapOf("status" to "unsupported"))
+            return
+        }
+        result.success(mapOf("status" to "ok", "path" to path))
+    }
+
+    /**
+     * 唤起系统文件管理器（SAF）选择自定义下载目录。
+     *
+     * SAF 只负责「选目录」，下载写盘仍是路径直写文件系统，因此需要「所有文件
+     * 访问」权限；未授权时返回 need_permission，由前端先引导授权再重试。
+     */
+    private fun pickDownloadDir(result: MethodChannel.Result) {
+        if (!storagePermissionGranted()) {
+            result.success(mapOf("status" to "need_permission"))
+            return
+        }
+        if (pendingPickDirResult != null) {
+            // 已有选择器在途（重复触发）：忽略本次
+            result.success(mapOf("status" to "canceled"))
+            return
+        }
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                // 部分 ROM 需显式开启「显示高级设备」才可见部分目录
+                .putExtra("android.content.extra.SHOW_ADVANCED", true)
+            pendingPickDirResult = result
+            startActivityForResult(intent, PICK_DIR_REQ)
+        } catch (e: ActivityNotFoundException) {
+            Log.e(TAG, "No document tree picker available", e)
+            result.success(mapOf("status" to "unsupported"))
+        }
+    }
+
+    /**
+     * 把 SAF 目录 tree URI 映射为本地文件系统路径。
+     *
+     * 仅支持系统外部存储 provider：documentId 为 "primary:xxx"（内置存储）或
+     * "XXXX-XXXX:xxx"（SD 卡等可移动卷），映射为 /storage/emulated/0/xxx 与
+     * /storage/<卷>/xxx。云盘等其它 provider 与根目录（无子路径）无法用于
+     * 路径直写，返回 null。
+     */
+    private fun resolveTreePath(treeUri: Uri): String? {
+        if (treeUri.authority != "com.android.externalstorage.documents") {
+            Log.w(TAG, "Unsupported tree provider: ${treeUri.authority}")
+            return null
+        }
+        val docId = try {
+            DocumentsContract.getTreeDocumentId(treeUri)
+        } catch (e: Exception) {
+            Log.w(TAG, "Bad tree uri: $treeUri", e)
+            return null
+        }
+        val parts = docId.split(":", limit = 2)
+        if (parts.size != 2) return null
+        val relative = parts[1].trim('/')
+        if (relative.isEmpty()) return null // 根目录：下载产物需落在子目录
+        val root = if (parts[0].equals("primary", ignoreCase = true)) {
+            Environment.getExternalStorageDirectory().absolutePath
+        } else {
+            "/storage/${parts[0]}"
+        }
+        return "$root/$relative"
     }
 }

@@ -10,7 +10,7 @@ import '../api/client.dart';
 class StorageOption {
   final String label;
   final String path;
-  final String kind; // internal / external / private / desktop
+  final String kind; // internal / private / custom / desktop
 
   const StorageOption({
     required this.label,
@@ -88,6 +88,19 @@ class StorageService {
     } catch (_) {}
   }
 
+  /// 唤起系统文件管理器选择自定义下载目录（Android）。
+  ///
+  /// 返回 {status, path}：ok / canceled / need_permission / unsupported；
+  /// 原生桥异常时返回 null。
+  static Future<Map<dynamic, dynamic>?> pickDirectory() async {
+    if (kIsWeb || !Platform.isAndroid) return null;
+    try {
+      final res = await _channel.invokeMethod('pickDownloadDir');
+      if (res is Map) return res;
+    } catch (_) {}
+    return null;
+  }
+
   /// 默认位置：优先内部存储（公共 Movies），其次列表首项。
   static StorageOption? defaultOption() {
     for (final o in options) {
@@ -114,6 +127,7 @@ class DownloadSettings {
   static const _maxConcurrentKey = 'download_max_concurrent';
   static const _speedLimitKey = 'download_speed_limit_mbps';
   static const _storageKindKey = 'download_storage_kind';
+  static const _storageCustomPathKey = 'download_storage_custom_path';
 
   /// 同时下载的任务数上限（默认 1）。
   static int maxConcurrent = 1;
@@ -121,8 +135,11 @@ class DownloadSettings {
   /// 全局下载限速（MB/s，0 = 不限制；默认 0）。
   static int speedLimitMbps = 0;
 
-  /// 当前存储位置（Android 内部存储/SD 卡/私有目录；桌面下载目录）。
+  /// 当前存储位置（Android 内部存储/自定义/私有目录；桌面下载目录）。
   static StorageOption? storage;
+
+  /// 用户经文件管理器选择的自定义位置（未设置时为 null）。
+  static StorageOption? customStorage;
 
   static JavDBClient? _client;
 
@@ -149,17 +166,30 @@ class DownloadSettings {
       maxConcurrent = prefs.getInt(_maxConcurrentKey) ?? 1;
       speedLimitMbps = prefs.getInt(_speedLimitKey) ?? 0;
       final kind = prefs.getString(_storageKindKey) ?? '';
+      final customPath = prefs.getString(_storageCustomPathKey) ?? '';
+      customStorage = customPath.isEmpty ? null : _customOption(customPath);
       await StorageService.refresh();
-      storage = StorageService.byKind(kind) ?? StorageService.defaultOption();
+      storage = _resolve(kind);
     } catch (_) {}
   }
 
   /// 重新枚举存储位置（权限授予返回应用后调用）；已保存位置缺失时回退默认。
   static Future<void> refreshStorage() async {
     await StorageService.refresh();
-    storage = StorageService.byKind(storage?.kind ?? '') ??
-        StorageService.defaultOption();
+    storage = _resolve(storage?.kind ?? '');
   }
+
+  /// 按 kind 解析存储位置：自定义走已保存路径（丢失时回退默认）。
+  static StorageOption? _resolve(String kind) {
+    if (kind == 'custom') {
+      return customStorage ?? StorageService.defaultOption();
+    }
+    return StorageService.byKind(kind) ?? StorageService.defaultOption();
+  }
+
+  /// 构造自定义位置选项（label 固定，路径即用户选择目录）。
+  static StorageOption _customOption(String path) =>
+      StorageOption(label: '自定义位置', path: path, kind: 'custom');
 
   /// 修改同时下载个数。
   static Future<void> setMaxConcurrent(int value) async {
@@ -178,6 +208,10 @@ class DownloadSettings {
   /// 修改存储位置（写盘；后续创建的任务与下次启动生效）。
   static Future<void> setStorage(StorageOption option) async {
     storage = option;
+    if (option.kind == 'custom') {
+      customStorage = _customOption(option.path);
+      await _persist(_storageCustomPathKey, option.path);
+    }
     await _persist(_storageKindKey, option.kind);
   }
 

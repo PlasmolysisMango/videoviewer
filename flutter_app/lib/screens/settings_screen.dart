@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,6 +10,9 @@ import '../services/data_saver.dart';
 import '../services/download_settings.dart';
 import '../services/logger.dart';
 import 'video_player_screen.dart' show PlayerDefaults;
+
+/// 存储位置弹窗中「自定义位置（文件管理器）」条目的哨兵值。
+const _pickCustomDir = 'pick_custom_directory';
 
 /// 设置页（侧边栏入口）：播放行为、网页版 Cookie、关于。
 class SettingsScreen extends StatefulWidget {
@@ -21,12 +27,13 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _autoWatched = false;
   int _maxHeight = 0; // 默认清晰度上限（px），0 = 不限
   bool _limitOnMobile = true; // 移动网络下限制加载（默认开）
-  int _speedMbps = 2; // 下载速率上限（MB/s），0 = 不限制
+  int _speedMbps = 2; // 缓存速率上限（MB/s），0 = 不限制
   int _bufferSeconds = 20; // 预读上限（秒），0 = 不限制
   // 下载设置：同时下载个数 / 全局限速 / 存储位置。
   int _dlConcurrent = 1;
   int _dlSpeedMbps = 0;
   StorageOption? _dlStorage;
+  bool _pickDirAfterGrant = false; // 授权返回后自动打开目录选择器
 
   static const _autoWatchedKey = 'auto_mark_watched';
   static const _maxHeightKey = 'default_max_height';
@@ -49,7 +56,13 @@ class _SettingsScreenState extends State<SettingsScreen>
     // 从系统授权页返回：刷新存储授权状态与位置列表。
     if (state == AppLifecycleState.resumed) {
       DownloadSettings.refreshStorage().then((_) {
-        if (mounted) setState(() => _dlStorage = DownloadSettings.storage);
+        if (!mounted) return;
+        setState(() => _dlStorage = DownloadSettings.storage);
+        // 授权后自动续接：直接打开文件管理器选择自定义目录。
+        if (_pickDirAfterGrant) {
+          _pickDirAfterGrant = false;
+          if (StorageService.granted) _pickCustomDir();
+        }
       });
     }
   }
@@ -175,8 +188,12 @@ class _SettingsScreenState extends State<SettingsScreen>
     AppLogger.info('Download speed limit: $picked');
   }
 
-  /// 存储位置选择（Android：内部存储/SD 卡/私有目录；桌面：下载目录）。
+  /// 存储位置选择：Android 走内置/自定义（文件管理器）/私有目录；桌面为下载目录。
   Future<void> _pickStorage() async {
+    if (!kIsWeb && Platform.isAndroid) {
+      await _pickAndroidStorage();
+      return;
+    }
     final options = StorageService.options;
     if (options.isEmpty) {
       _toast('当前平台没有可选的存储位置');
@@ -204,15 +221,116 @@ class _SettingsScreenState extends State<SettingsScreen>
       ),
     );
     if (picked == null || picked.kind == _dlStorage?.kind) return;
-    await DownloadSettings.setStorage(picked);
+    await _applyStorage(picked);
+  }
+
+  /// Android 存储位置：内置位置（默认）/ 自定义位置（文件管理器）/ 私有目录。
+  Future<void> _pickAndroidStorage() async {
+    final internalOpt = StorageService.byKind('internal');
+    final privateOpt = StorageService.byKind('private');
+    final custom = DownloadSettings.customStorage;
+    final picked = await showModalBottomSheet<Object>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (internalOpt != null)
+              ListTile(
+                dense: true,
+                title: Text(internalOpt.label),
+                subtitle: Text(internalOpt.path,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing: _dlStorage?.kind == internalOpt.kind
+                    ? const Icon(Icons.check)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, internalOpt),
+              ),
+            ListTile(
+              dense: true,
+              title: const Text('自定义位置（文件管理器）'),
+              subtitle: Text(
+                custom?.path ?? '通过系统文件管理器选择目录',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing:
+                  _dlStorage?.kind == 'custom' ? const Icon(Icons.check) : null,
+              onTap: () => Navigator.pop(sheetContext, _pickCustomDir),
+            ),
+            if (privateOpt != null)
+              ListTile(
+                dense: true,
+                title: Text(privateOpt.label),
+                subtitle: Text(privateOpt.path,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing: _dlStorage?.kind == privateOpt.kind
+                    ? const Icon(Icons.check)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, privateOpt),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null) return;
+    if (picked == _pickCustomDir) {
+      await _pickCustomDir();
+      return;
+    }
+    final opt = picked as StorageOption;
+    if (opt.kind != _dlStorage?.kind) await _applyStorage(opt);
+  }
+
+  /// 唤起系统文件管理器选择自定义目录。
+  ///
+  /// 下载走路径直写文件系统，需先有「所有文件访问」授权（SAF 仅用于选择
+  /// 位置）；未授权时先引导授权，返回后自动续接选择流程。
+  Future<void> _pickCustomDir() async {
+    if (!StorageService.granted) {
+      _showPermissionHint(thenPickDir: true);
+      return;
+    }
+    final res = await StorageService.pickDirectory();
     if (!mounted) return;
-    setState(() => _dlStorage = picked);
-    AppLogger.info('Download storage: ${picked.kind} ${picked.path}');
+    if (res == null) {
+      _toast('当前设备不支持文件管理器选择');
+      return;
+    }
+    switch (res['status'] as String? ?? '') {
+      case 'ok':
+        final path = res['path'] as String? ?? '';
+        if (path.isEmpty) return;
+        await _applyStorage(
+          StorageOption(label: '自定义位置', path: path, kind: 'custom'),
+        );
+        break;
+      case 'need_permission':
+        _showPermissionHint(thenPickDir: true);
+        break;
+      case 'unsupported':
+        _toast('该位置不可用：请选择本地存储中的子目录（不支持根目录/云盘）');
+        break;
+      case 'canceled':
+        break;
+      default:
+        _toast('选择目录失败，请重试');
+    }
+  }
+
+  /// 应用存储位置（写盘并刷新界面；需要时提示授权）。
+  Future<void> _applyStorage(StorageOption option) async {
+    await DownloadSettings.setStorage(option);
+    if (!mounted) return;
+    setState(() => _dlStorage = option);
+    AppLogger.info('Download storage: ${option.kind} ${option.path}');
     // 选中的是公共目录且未授权：引导去系统设置开启「所有文件访问」。
     if (DownloadSettings.needsPermission) _showPermissionHint();
   }
 
-  void _showPermissionHint() {
+  /// 授权引导弹窗；[thenPickDir] 为 true 时授权返回后自动打开目录选择器。
+  void _showPermissionHint({bool thenPickDir = false}) {
     showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -226,6 +344,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           FilledButton(
             onPressed: () {
               Navigator.pop(dialogContext);
+              if (thenPickDir) _pickDirAfterGrant = true;
               StorageService.requestPermission();
             },
             child: const Text('去授权'),
@@ -330,23 +449,22 @@ class _SettingsScreenState extends State<SettingsScreen>
           ListTile(
             leading: const Icon(Icons.hd_outlined),
             title: const Text('默认清晰度'),
-            subtitle: Text(_maxHeight == 0
-                ? '不限（使用片源默认排序）'
-                : '最高 $_maxHeight p'),
+            subtitle:
+                Text(_maxHeight == 0 ? '不限（使用片源默认排序）' : '最高 $_maxHeight p'),
             trailing: const Icon(Icons.arrow_drop_down),
             onTap: _pickMaxHeight,
           ),
           SwitchListTile(
             secondary: const Icon(Icons.data_saver_on),
             title: const Text('移动网络下限制加载'),
-            subtitle: const Text('使用流量播放时限制预读与下载速率，避免跑满流量'),
+            subtitle: const Text('使用流量播放时限制播放缓存速率，避免跑满流量'),
             value: _limitOnMobile,
             onChanged: _toggleLimitOnMobile,
           ),
           if (_limitOnMobile) ...[
             ListTile(
               leading: const Icon(Icons.speed),
-              title: const Text('下载速度上限'),
+              title: const Text('缓存速度'),
               subtitle: Text(_speedMbps == 0 ? '不限制' : '$_speedMbps MB/s'),
               trailing: const Icon(Icons.arrow_drop_down),
               onTap: _pickSpeedLimit,
