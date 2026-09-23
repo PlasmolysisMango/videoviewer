@@ -13,6 +13,8 @@ import io.flutter.Log;
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.plugin.common.EventChannel;
+import io.flutter.plugin.common.MethodCall;
+import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugins.videoplayer.Messages.AndroidVideoPlayerApi;
 import io.flutter.plugins.videoplayer.Messages.CreationOptions;
 import io.flutter.plugins.videoplayer.Messages.PlatformVideoFormat;
@@ -26,8 +28,13 @@ import io.flutter.view.TextureRegistry;
 /** Android platform implementation of the VideoPlayerPlugin. */
 public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
   private static final String TAG = "VideoPlayerPlugin";
+
+  /** [videoviewer] 「移动网络下限制加载」开关与档位的设置通道。 */
+  private static final String DATA_SAVER_CHANNEL = "videoviewer/data_saver";
+
   private final LongSparseArray<VideoPlayer> videoPlayers = new LongSparseArray<>();
   private FlutterState flutterState;
+  @Nullable private MethodChannel dataSaverChannel;
   private final VideoPlayerOptions sharedOptions = new VideoPlayerOptions();
   private long nextPlayerIdentifier = 1;
 
@@ -46,6 +53,9 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
             binding.getTextureRegistry());
     flutterState.startListening(this, binding.getBinaryMessenger());
 
+    dataSaverChannel = new MethodChannel(binding.getBinaryMessenger(), DATA_SAVER_CHANNEL);
+    dataSaverChannel.setMethodCallHandler(this::handleDataSaverCall);
+
     binding
         .getPlatformViewRegistry()
         .registerViewFactory(
@@ -55,6 +65,10 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
 
   @Override
   public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
+    if (dataSaverChannel != null) {
+      dataSaverChannel.setMethodCallHandler(null);
+      dataSaverChannel = null;
+    }
     if (flutterState == null) {
       Log.wtf(TAG, "Detached from the engine before registering to it.");
     }
@@ -188,6 +202,46 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
   @Override
   public void setMixWithOthers(@NonNull Boolean mixWithOthers) {
     sharedOptions.mixWithOthers = mixWithOthers;
+  }
+
+  /**
+   * [videoviewer] 处理「移动网络下限制加载」开关与档位的同步调用。
+   *
+   * <p>开关与档位保存在 {@link DataSaver} 的静态状态中，播放器侧的
+   * {@link DataSaverLoadControl} 与 {@link DataSaverDataSource} 会在每次决策时读取，
+   * 因此设置变更无需重建播放器、下次决策即生效。
+   */
+  private void handleDataSaverCall(
+      @NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+    final Context context = flutterState == null ? null : flutterState.applicationContext;
+    switch (call.method) {
+      case "setEnabled":
+        DataSaver.setEnabled(Boolean.TRUE.equals(call.<Boolean>argument("enabled")));
+        result.success(null);
+        break;
+      case "setSpeedLimitMbps":
+        DataSaver.setSpeedLimitMbps(intArgument(call, "mbps", 2));
+        result.success(null);
+        break;
+      case "setBufferSeconds":
+        DataSaver.setBufferSeconds(intArgument(call, "seconds", 20));
+        result.success(null);
+        break;
+      case "isActive":
+        result.success(context != null && DataSaver.isLimitActive(context));
+        break;
+      case "isOnMobileNetwork":
+        result.success(context != null && DataSaver.isOnCellularNetwork(context));
+        break;
+      default:
+        result.notImplemented();
+    }
+  }
+
+  /** 读取 int 参数，缺省时回退到与 {@link DataSaver} 初始值一致的默认档位。 */
+  private static int intArgument(@NonNull MethodCall call, @NonNull String name, int fallback) {
+    Integer value = call.argument(name);
+    return value == null ? fallback : value;
   }
 
   @Override

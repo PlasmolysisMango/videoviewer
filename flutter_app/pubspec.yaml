@@ -1,7 +1,7 @@
 name: javdb_app
 description: JavDB video search, playback, and download app.
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.2+3
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -34,6 +34,12 @@ flutter:
 # （本项目 CI 为 3.32.5），故 vendor 2.8.15 并回移官方修复，见
 # third_party/video_player_android 中 TextureExoPlayerEventListener 的
 # [videoviewer] 补丁块。待 Flutter SDK 升级到 3.44+ 后可移除本 override。
+#
+# 移动网络加载限制（[videoviewer] 扩展）：同一 vendored 插件内新增
+# DataSaver（开关/档位状态）、DataSaverLoadControl（动态缓冲水位，
+# 10/20/30/60s 档）与 DataSaverDataSource（下载限速 1/2/3/5 MB/s），
+# 经 videoviewer/data_saver 通道由设置页控制；上游 video_player 无
+# 缓冲配置 API（flutter/flutter#141511、#40931），无法用依赖替代。
 dependency_overrides:
   video_player_android:
     path: ../third_party/video_player_android

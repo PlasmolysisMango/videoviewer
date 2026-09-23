@@ -76,7 +76,12 @@ final class HttpVideoAsset extends VideoAsset {
   MediaSource.Factory getMediaSourceFactory(
       Context context, DefaultHttpDataSource.Factory initialFactory) {
     unstableUpdateDataSourceFactory(initialFactory, httpHeaders, userAgent);
-    DataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(context, initialFactory);
+    // [videoviewer] HTTP 层包装下载限速（仅在蜂窝 + 开关开启时实际生效），
+    // 本地文件等其它协议不经此层，不受影响。
+    DataSource.Factory httpDataSourceFactory =
+        new DataSaverDataSource.Factory(context, initialFactory);
+    DataSource.Factory dataSourceFactory =
+        new DefaultDataSource.Factory(context, httpDataSourceFactory);
     return new DefaultMediaSourceFactory(context).setDataSourceFactory(dataSourceFactory);
   }
 

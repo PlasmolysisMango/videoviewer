@@ -7,6 +7,8 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:video_player/video_player.dart';
 
+import 'data_saver.dart';
+
 /// 播放引擎抽象：屏蔽 video_player 与 media_kit 两套后端差异，
 /// 供 VideoPlayerScreen 的手势/控制条 UI 统一驱动。
 abstract class PlayerEngine {
@@ -55,6 +57,9 @@ class VideoPlayerEngine implements PlayerEngine {
 
   static Future<PlayerEngine> open(String url,
       {Map<String, String> headers = const {}}) async {
+    // 把移动网络加载限制设置同步给原生（Android 侧 ExoPlayer 缓冲/限速策略），
+    // 保证本次播放与设置页一致；非 Android 平台为安全空操作。
+    await DataSaver.syncToNative();
     final c = VideoPlayerController.networkUrl(
       Uri.parse(url),
       httpHeaders: headers,

@@ -14,6 +14,7 @@ import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/video_player_screen.dart';
 import 'services/backend_launcher.dart';
+import 'services/data_saver.dart';
 import 'services/logger.dart';
 import 'services/subtitle_service.dart';
 
@@ -88,6 +89,9 @@ Future<void> _runApp() async {
 
   // 播放默认设置预读（默认清晰度上限），播放页同步读取。
   unawaited(PlayerDefaults.load());
+
+  // 移动网络加载限制设置预读（开关/限速/预读档位），Android 播放前同步给原生。
+  unawaited(DataSaver.load());
 
   runApp(MyApp(client: client));
 }

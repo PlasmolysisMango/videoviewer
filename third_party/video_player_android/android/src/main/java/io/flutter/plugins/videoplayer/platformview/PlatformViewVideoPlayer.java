@@ -7,9 +7,12 @@ package io.flutter.plugins.videoplayer.platformview;
 import android.content.Context;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.OptIn;
 import androidx.annotation.VisibleForTesting;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
+import io.flutter.plugins.videoplayer.DataSaverLoadControl;
 import io.flutter.plugins.videoplayer.ExoPlayerEventListener;
 import io.flutter.plugins.videoplayer.VideoAsset;
 import io.flutter.plugins.videoplayer.VideoPlayer;
@@ -40,6 +43,7 @@ public class PlatformViewVideoPlayer extends VideoPlayer {
    * @param options options for playback.
    * @return a video player instance.
    */
+  @OptIn(markerClass = UnstableApi.class)
   @NonNull
   public static PlatformViewVideoPlayer create(
       @NonNull Context context,
@@ -53,7 +57,9 @@ public class PlatformViewVideoPlayer extends VideoPlayer {
         () -> {
           ExoPlayer.Builder builder =
               new ExoPlayer.Builder(context)
-                  .setMediaSourceFactory(asset.getMediaSourceFactory(context));
+                  .setMediaSourceFactory(asset.getMediaSourceFactory(context))
+                  // [videoviewer] 移动网络下的动态缓冲策略（见 DataSaver / DataSaverLoadControl）。
+                  .setLoadControl(new DataSaverLoadControl(context));
           return builder.build();
         });
   }
