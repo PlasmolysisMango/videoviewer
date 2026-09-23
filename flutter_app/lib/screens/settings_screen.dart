@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/client.dart';
 import '../services/data_saver.dart';
+import '../services/download_settings.dart';
 import '../services/logger.dart';
 import 'video_player_screen.dart' show PlayerDefaults;
 
@@ -15,12 +16,17 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
   bool _autoWatched = false;
   int _maxHeight = 0; // 默认清晰度上限（px），0 = 不限
   bool _limitOnMobile = true; // 移动网络下限制加载（默认开）
   int _speedMbps = 2; // 下载速率上限（MB/s），0 = 不限制
   int _bufferSeconds = 20; // 预读上限（秒），0 = 不限制
+  // 下载设置：同时下载个数 / 全局限速 / 存储位置。
+  int _dlConcurrent = 1;
+  int _dlSpeedMbps = 0;
+  StorageOption? _dlStorage;
 
   static const _autoWatchedKey = 'auto_mark_watched';
   static const _maxHeightKey = 'default_max_height';
@@ -28,11 +34,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 从系统授权页返回：刷新存储授权状态与位置列表。
+    if (state == AppLifecycleState.resumed) {
+      DownloadSettings.refreshStorage().then((_) {
+        if (mounted) setState(() => _dlStorage = DownloadSettings.storage);
+      });
+    }
   }
 
   Future<void> _load() async {
     await DataSaver.load();
+    // 下载设置：main 启动时已预读，这里刷新存储位置（SD 卡/授权状态变化）。
+    await DownloadSettings.refreshStorage();
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
@@ -41,6 +66,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _limitOnMobile = DataSaver.limitOnMobile;
       _speedMbps = DataSaver.speedLimitMbps;
       _bufferSeconds = DataSaver.bufferSeconds;
+      _dlConcurrent = DownloadSettings.maxConcurrent;
+      _dlSpeedMbps = DownloadSettings.speedLimitMbps;
+      _dlStorage = DownloadSettings.storage;
     });
   }
 
@@ -118,6 +146,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() => _bufferSeconds = picked);
     AppLogger.info('Mobile read ahead limit: $picked');
+  }
+
+  /// 同时下载个数档位（队列并发上限）。
+  static const _dlConcurrentOptions = <(int, String)>[
+    (1, '1 个'),
+    (2, '2 个'),
+    (3, '3 个'),
+    (4, '4 个'),
+  ];
+
+  Future<void> _pickDownloadConcurrent() async {
+    final picked = await _pickOption(_dlConcurrentOptions, _dlConcurrent);
+    if (picked == null || picked == _dlConcurrent) return;
+    await DownloadSettings.setMaxConcurrent(picked);
+    if (!mounted) return;
+    setState(() => _dlConcurrent = picked);
+    AppLogger.info('Download max concurrent: $picked');
+  }
+
+  /// 下载队列全局限速（与移动网络限速独立；档位沿用同一套：1/2/3/5/不限）。
+  Future<void> _pickDownloadSpeedLimit() async {
+    final picked = await _pickOption(_speedOptions, _dlSpeedMbps);
+    if (picked == null || picked == _dlSpeedMbps) return;
+    await DownloadSettings.setSpeedLimitMbps(picked);
+    if (!mounted) return;
+    setState(() => _dlSpeedMbps = picked);
+    AppLogger.info('Download speed limit: $picked');
+  }
+
+  /// 存储位置选择（Android：内部存储/SD 卡/私有目录；桌面：下载目录）。
+  Future<void> _pickStorage() async {
+    final options = StorageService.options;
+    if (options.isEmpty) {
+      _toast('当前平台没有可选的存储位置');
+      return;
+    }
+    final picked = await showModalBottomSheet<StorageOption>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final o in options)
+              ListTile(
+                dense: true,
+                title: Text(o.label),
+                subtitle:
+                    Text(o.path, maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing:
+                    o.kind == _dlStorage?.kind ? const Icon(Icons.check) : null,
+                onTap: () => Navigator.pop(sheetContext, o),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || picked.kind == _dlStorage?.kind) return;
+    await DownloadSettings.setStorage(picked);
+    if (!mounted) return;
+    setState(() => _dlStorage = picked);
+    AppLogger.info('Download storage: ${picked.kind} ${picked.path}');
+    // 选中的是公共目录且未授权：引导去系统设置开启「所有文件访问」。
+    if (DownloadSettings.needsPermission) _showPermissionHint();
+  }
+
+  void _showPermissionHint() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('需要存储权限'),
+        content: const Text('下载到公共目录需要「所有文件访问」权限，去系统设置开启后返回即可生效。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('稍后'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              StorageService.requestPermission();
+            },
+            child: const Text('去授权'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 存储位置副标题：未授权时提示（红色）。
+  String _storageSubtitle() {
+    final s = _dlStorage;
+    if (s == null) return '未设置';
+    if (DownloadSettings.needsPermission) return '${s.label} · 未授权（点此去设置）';
+    return '${s.label} · ${s.path}';
   }
 
   /// 通用档位选择：底部弹窗勾选当前值，返回选中的档位（未选择返回 null）。
@@ -231,6 +359,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: _pickBufferLimit,
             ),
           ],
+          const _SectionHeader('下载'),
+          ListTile(
+            leading: const Icon(Icons.download_outlined),
+            title: const Text('同时下载个数'),
+            subtitle: Text('$_dlConcurrent 个'),
+            trailing: const Icon(Icons.arrow_drop_down),
+            onTap: _pickDownloadConcurrent,
+          ),
+          ListTile(
+            leading: const Icon(Icons.speed),
+            title: const Text('下载限速'),
+            subtitle: Text(_dlSpeedMbps == 0 ? '不限制' : '$_dlSpeedMbps MB/s'),
+            trailing: const Icon(Icons.arrow_drop_down),
+            onTap: _pickDownloadSpeedLimit,
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder_outlined),
+            title: const Text('存储位置'),
+            subtitle: Text(
+              _storageSubtitle(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: DownloadSettings.needsPermission
+                  ? TextStyle(color: Theme.of(context).colorScheme.error)
+                  : null,
+            ),
+            trailing: const Icon(Icons.arrow_drop_down),
+            onTap: _pickStorage,
+          ),
           const _SectionHeader('网页版'),
           ListTile(
             leading: const Icon(Icons.cookie_outlined),

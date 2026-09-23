@@ -51,7 +51,9 @@ type Server struct {
 	av    *av.Client
 	// subs is created lazily on first subtitle request (see subtitlesClient).
 	subs *subs.Client
-	cfg  Config
+	// dl 是下载队列管理器（异步任务、进度与调度，见 downloads.go）。
+	dl  *downloadManager
+	cfg Config
 
 	// username/password 是保存的 JavDB 凭据（来自登录或 session.json），
 	// JWT 失效时用于自动重登；与 auth 中间件无关，永不返回给前端。
@@ -136,14 +138,16 @@ func New(cfg Config) (*Server, error) {
 	}
 	imgClient := &http.Client{Transport: imgTransport, Timeout: 30 * time.Second}
 
-	return &Server{
+	srv := &Server{
 		javdb:     javdbClient,
 		av:        avClient,
 		cfg:       cfg,
 		imgClient: imgClient,
 		username:  savedUser,
 		password:  savedPass,
-	}, nil
+	}
+	srv.dl = newDownloadManager(srv)
+	return srv, nil
 }
 
 // Start starts the HTTP server in a goroutine.
@@ -198,6 +202,15 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/av/play/", s.handleAVPlay)
 	mux.HandleFunc("POST /api/av/download/", s.handleAVDownload)
 	mux.HandleFunc("POST /api/av/cf-cookie", s.handleAVCFCookie)
+	// Download queue endpoints (async tasks with progress & scheduling)
+	mux.HandleFunc("POST /api/downloads", s.handleDownloadCreate)
+	mux.HandleFunc("GET /api/downloads", s.handleDownloadList)
+	mux.HandleFunc("GET /api/downloads/{id}", s.handleDownloadGet)
+	mux.HandleFunc("GET /api/downloads/{id}/file", s.handleDownloadFile)
+	mux.HandleFunc("DELETE /api/downloads/{id}", s.handleDownloadDelete)
+	mux.HandleFunc("POST /api/downloads/{id}/cancel", s.handleDownloadCancel)
+	mux.HandleFunc("POST /api/downloads/{id}/retry", s.handleDownloadRetry)
+	mux.HandleFunc("POST /api/downloads/config", s.handleDownloadConfig)
 	// Subtitle endpoints (pkg/subs: subtitlecat / avsubtitles / scanlover)
 	mux.HandleFunc("GET /api/subtitles/search", s.handleSubtitlesSearch)
 	mux.HandleFunc("GET /api/subtitles/auto", s.handleSubtitlesAuto)

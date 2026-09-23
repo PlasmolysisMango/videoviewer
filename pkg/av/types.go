@@ -132,6 +132,8 @@ type DownloadOptions struct {
 	MinQualityHeight int
 	// Source 指定数据源（如 "missav"）；空表示按 Client 优先级自动选择。
 	Source string
+	// Variant 指定片源变体（"uncensored" / "cnsub" / "normal"）；空表示默认全量解析。
+	Variant string
 	// Concurrency 分片下载并发数，默认 8。
 	Concurrency int
 	// RemuxToMP4 是否在下载 .ts 后调用 ffmpeg 转封装为 .mp4（需系统安装 ffmpeg）。
@@ -140,6 +142,8 @@ type DownloadOptions struct {
 	FFmpegPath string
 	// KeepTS 转 mp4 后是否保留原始 .ts 文件。
 	KeepTS bool
+	// SpeedLimitBytesPerSec 分片下载的整体速率上限（字节/秒）；<=0 表示不限制。
+	SpeedLimitBytesPerSec int64
 	// Progress 进度回调，可为 nil。done/total 为已下载/总分片数。
 	Progress func(done, total int)
 }
@@ -220,7 +224,7 @@ func normalizeCode(code string) string {
 }
 
 // sameCode 比较两个番号是否等同，忽略尾部数字段的前导零
-//（SSIS-041 ≡ SSIS-41）：不同站点对同一影片的收录形式可能不同。
+// （SSIS-041 ≡ SSIS-41）：不同站点对同一影片的收录形式可能不同。
 func sameCode(a, b string) bool {
 	if a == b {
 		return true

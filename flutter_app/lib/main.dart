@@ -15,6 +15,7 @@ import 'screens/home_screen.dart';
 import 'screens/video_player_screen.dart';
 import 'services/backend_launcher.dart';
 import 'services/data_saver.dart';
+import 'services/download_settings.dart';
 import 'services/logger.dart';
 import 'services/subtitle_service.dart';
 
@@ -70,10 +71,13 @@ class _BackendShutdownObserver extends WidgetsBindingObserver {
 }
 
 Future<void> _runApp() async {
+  // 下载设置（存储位置/并发/限速）需在后端启动前读取：下载目录随启动传入。
+  await DownloadSettings.load();
+
   // Launch the Go backend server
   try {
     AppLogger.info('Starting backend server...');
-    await BackendLauncher.launch();
+    await BackendLauncher.launch(downloadDir: DownloadSettings.currentDir);
     AppLogger.info('Backend server started successfully');
   } catch (e, stack) {
     AppLogger.error('Failed to start backend server', e, stack);
@@ -82,6 +86,10 @@ Future<void> _runApp() async {
 
   // Create API client using the backend URL
   final client = JavDBClient(BackendLauncher.baseUrl);
+
+  // 下载设置绑定 client（并发/限速推送后端），随后同步一次当前配置。
+  DownloadSettings.bind(client);
+  unawaited(DownloadSettings.syncToBackend());
 
   // 字幕服务：绑定 API client 并恢复本地设置（字号/偏移/开关）。
   SubtitleService.bind(client);

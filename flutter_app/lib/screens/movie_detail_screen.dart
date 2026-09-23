@@ -10,6 +10,7 @@ import '../api/models.dart';
 import '../providers/user_state_provider.dart';
 import '../services/backend_launcher.dart';
 import '../services/data_cache.dart';
+import '../services/download_settings.dart';
 import '../services/history.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
@@ -507,35 +508,15 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
   }
 
   Future<void> _playVideo() async {
-    // 惰性加载：如果该变体的流尚未解析，先逐源级联解析（当前源优先，
-    // 失败/无流自动换下一源）；全部失败再试 avDetail 带回的直连 m3u8，
-    // 仍无流则提示无播放源。
+    // 惰性加载：如果该变体的流尚未解析，先按需级联解析。
     var streams = List<VideoStream>.from(
         _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
     if (streams.isEmpty) {
       setState(() => _resolving = true);
       try {
-        final gen = ++_resolveGeneration;
-        for (final source in _sourceOrder(startWith: _selectedSource)) {
-          await _resolveVariantOn(source, _selectedVariant);
-          if (gen != _resolveGeneration || !mounted) return;
-          streams = List<VideoStream>.from(
-              _streamsByVariant[_selectedVariant] ?? const <VideoStream>[]);
-          if (streams.isNotEmpty) {
-            // 级联换源成功时让片源选择器跟随实际生效的源
-            if (_selectedSource != source) {
-              setState(() => _selectedSource = source);
-            }
-            break;
-          }
-        }
+        streams = await _resolveVariantStreams(_selectedVariant);
+        if (!mounted) return;
         if (streams.isEmpty) {
-          final m3u8Url = _avData?['m3u8'] as String?;
-          if (m3u8Url != null && m3u8Url.isNotEmpty) {
-            streams.add(VideoStream(url: m3u8Url));
-          }
-        }
-        if (streams.isEmpty && mounted) {
           setState(() => _noSource = true);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -572,6 +553,36 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
       context,
       MaterialPageRoute(builder: (context) => screen),
     );
+  }
+
+  /// 按需解析指定变体的播放流（惰性加载）：已缓存直接返回；否则逐源级联
+  /// 解析（当前源优先，失败/无流自动换下一源），全部失败再回退 avDetail
+  /// 带回的直连 m3u8。级联换源成功时让片源选择器跟随实际生效的源。
+  Future<List<VideoStream>> _resolveVariantStreams(String variant) async {
+    var streams = List<VideoStream>.from(
+        _streamsByVariant[variant] ?? const <VideoStream>[]);
+    if (streams.isNotEmpty) return streams;
+    final gen = ++_resolveGeneration;
+    for (final source in _sourceOrder(startWith: _selectedSource)) {
+      await _resolveVariantOn(source, variant);
+      if (gen != _resolveGeneration || !mounted) return streams;
+      streams = List<VideoStream>.from(
+          _streamsByVariant[variant] ?? const <VideoStream>[]);
+      if (streams.isNotEmpty) {
+        // 级联换源成功时让片源选择器跟随实际生效的源
+        if (_selectedSource != source) {
+          setState(() => _selectedSource = source);
+        }
+        break;
+      }
+    }
+    if (streams.isEmpty) {
+      final m3u8Url = _avData?['m3u8'] as String?;
+      if (m3u8Url != null && m3u8Url.isNotEmpty) {
+        streams.add(VideoStream(url: m3u8Url));
+      }
+    }
+    return streams;
   }
 
   /// 提取 Detail 中的链接名称（series/maker/publisher 为单个 Link 对象）。
@@ -755,16 +766,62 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> {
     );
   }
 
-  void _downloadVideo() {
-    if (_avData == null) {
+  /// 下载入口：弹出「变体 + 清晰度」选择弹窗，确认后加入下载队列。
+  /// 流列表在弹窗内按需解析（与播放共用缓存）；下载任务只记录 code/源/
+  /// 变体/清晰度，实际下载时由后端重新解析播放流（URL 有时效且可级联换源）。
+  Future<void> _downloadVideo() async {
+    if (_noSource) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('视频源解析中，请稍后')),
+        const SnackBar(content: Text('无可用播放源，无法下载')),
       );
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('下载功能开发中...')),
+    final variants =
+        _availableVariants.isNotEmpty ? _availableVariants : _defaultVariants;
+    final initial =
+        variants.contains(_selectedVariant) ? _selectedVariant : variants.first;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _DownloadSheet(
+        title: _movieData?['title'] as String? ?? widget.movieNumber,
+        number: widget.movieNumber,
+        variants: variants,
+        initialVariant: initial,
+        resolve: _resolveVariantStreams,
+        onSubmit: _enqueueDownload,
+      ),
     );
+  }
+
+  /// 创建下载任务（弹窗确认后调用）：任务只记录 code/源/变体/清晰度，
+  /// 后端下载时重新解析播放流。存储位置取当前设置（Android 内部存储/
+  /// SD 卡/私有目录，桌面为下载目录）。
+  Future<bool> _enqueueDownload(String variant, int qualityHeight) async {
+    try {
+      await _client.createDownload(
+        code: widget.movieNumber,
+        title: _movieData?['title'] as String? ?? '',
+        cover: _movieData?['cover_url'] as String? ?? '',
+        source: _selectedSource,
+        variant: variant,
+        qualityHeight: qualityHeight,
+        dir: DownloadSettings.currentDir,
+      );
+      if (!mounted) return true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已加入下载队列')),
+      );
+      return true;
+    } catch (e) {
+      AppLogger.warning('Create download task failed: $e');
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('加入下载队列失败: $e')),
+      );
+      return false;
+    }
   }
 
   /// 收藏按钮：♥收藏 = JavDB "想看"标记（与登录账号双向同步，本地缓存）。
@@ -1638,6 +1695,273 @@ class _ImageViewerScreenState extends State<_ImageViewerScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+/// 下载弹窗：始终展示「变体 + 清晰度」两个下拉（单变体也展示），确认后
+/// 由详情页创建下载任务。清晰度来自按需解析的播放流（与播放共用缓存）。
+class _DownloadSheet extends StatefulWidget {
+  final String title;
+  final String number;
+  final List<String> variants;
+  final String initialVariant;
+  final Future<List<VideoStream>> Function(String variant) resolve;
+  final Future<bool> Function(String variant, int qualityHeight) onSubmit;
+
+  const _DownloadSheet({
+    required this.title,
+    required this.number,
+    required this.variants,
+    required this.initialVariant,
+    required this.resolve,
+    required this.onSubmit,
+  });
+
+  @override
+  State<_DownloadSheet> createState() => _DownloadSheetState();
+}
+
+class _DownloadSheetState extends State<_DownloadSheet>
+    with WidgetsBindingObserver {
+  late String _variant;
+  List<VideoStream>? _streams; // null = 解析中
+  int _qualityHeight = 0;
+  bool _submitting = false;
+  int _gen = 0; // 快速切变体时作废旧解析结果
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _variant = widget.initialVariant;
+    _fetchStreams();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 从系统授权页返回时刷新存储授权状态与位置列表。
+    if (state == AppLifecycleState.resumed) {
+      DownloadSettings.refreshStorage().then((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  /// 解析当前变体的清晰度列表（与播放共用缓存）。
+  Future<void> _fetchStreams() async {
+    final gen = ++_gen;
+    final streams = await widget.resolve(_variant);
+    if (!mounted || gen != _gen) return;
+    setState(() {
+      _streams = streams;
+      _qualityHeight = _bestHeight(streams);
+    });
+  }
+
+  /// 切换变体：清空旧列表（回到加载态）并重新解析。
+  void _loadVariant(String variant) {
+    setState(() {
+      _variant = variant;
+      _streams = null;
+    });
+    _fetchStreams();
+  }
+
+  /// 默认选中最高清晰度（无清晰度信息时为 0 = 默认档）。
+  static int _bestHeight(List<VideoStream> streams) {
+    var best = 0;
+    for (final s in streams) {
+      final h = s.qualityHeight ?? 0;
+      if (h > best) best = h;
+    }
+    return best;
+  }
+
+  /// 清晰度选项（按高度降序；全部未知时退化为单项「默认」）。
+  List<int> get _qualityOptions {
+    final heights = <int>{};
+    for (final s in _streams ?? const <VideoStream>[]) {
+      final h = s.qualityHeight ?? 0;
+      if (h > 0) heights.add(h);
+    }
+    final list = heights.toList()..sort((a, b) => b.compareTo(a));
+    if (list.isEmpty) list.add(0);
+    return list;
+  }
+
+  Future<void> _submit() async {
+    if (_submitting) return;
+    setState(() => _submitting = true);
+    final ok = await widget.onSubmit(_variant, _qualityHeight);
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop();
+      return;
+    }
+    setState(() => _submitting = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final loading = _streams == null;
+    final qualities = _qualityOptions;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('下载视频',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 2),
+            Text(
+              '${widget.number}  ${widget.title}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: theme.hintColor),
+            ),
+            const SizedBox(height: 16),
+            // 变体：始终展示（单变体也显示，明确当前片源的变体）
+            _buildOptionRow(
+              label: '变体',
+              child: DropdownButton<String>(
+                value: _variant,
+                underline: const SizedBox.shrink(),
+                borderRadius: BorderRadius.circular(12),
+                onChanged: (v) {
+                  if (v != null && v != _variant) _loadVariant(v);
+                },
+                items: [
+                  for (final v in widget.variants)
+                    DropdownMenuItem(
+                      value: v,
+                      child:
+                          Text(_MovieDetailScreenState._variantLabels[v] ?? v),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            // 清晰度：解析中展示加载态，解析完展示该变体的全部档位
+            _buildOptionRow(
+              label: '清晰度',
+              child: loading
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : DropdownButton<int>(
+                      value: qualities.contains(_qualityHeight)
+                          ? _qualityHeight
+                          : qualities.first,
+                      underline: const SizedBox.shrink(),
+                      borderRadius: BorderRadius.circular(12),
+                      onChanged: (h) {
+                        if (h != null) setState(() => _qualityHeight = h);
+                      },
+                      items: [
+                        for (final h in qualities)
+                          DropdownMenuItem(
+                            value: h,
+                            child: Text(h > 0 ? '${h}P' : '默认'),
+                          ),
+                      ],
+                    ),
+            ),
+            if (!loading && (_streams?.isEmpty ?? false)) ...[
+              const SizedBox(height: 6),
+              Text(
+                '未匹配到清晰度信息，将按默认清晰度下载',
+                style: TextStyle(fontSize: 11, color: theme.hintColor),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(Icons.folder_outlined, size: 16, color: theme.hintColor),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '保存至 ${DownloadSettings.storage?.label ?? '默认目录'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: theme.hintColor),
+                  ),
+                ),
+              ],
+            ),
+            if (DownloadSettings.needsPermission) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color:
+                      theme.colorScheme.errorContainer.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '尚未授予存储权限，下载可能失败',
+                        style: TextStyle(
+                            fontSize: 12, color: theme.colorScheme.error),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => StorageService.requestPermission(),
+                      child: const Text('去授权'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: (loading || _submitting) ? null : _submit,
+                icon: _submitting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.download),
+                label: const Text('加入下载队列'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 选项行：左侧标签 + 右侧下拉。
+  Widget _buildOptionRow({required String label, required Widget child}) {
+    return Row(
+      children: [
+        Text(label,
+            style: TextStyle(fontSize: 14, color: Theme.of(context).hintColor)),
+        const Spacer(),
+        child,
+      ],
     );
   }
 }

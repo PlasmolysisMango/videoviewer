@@ -3,8 +3,11 @@ package com.example.videoviewer
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -17,6 +20,7 @@ class MainActivity : FlutterActivity() {
         private const val TAG = "VideoViewer"
         private const val DEFAULT_ADDR = "127.0.0.1:18888"
         private const val NOTI_PERMISSION_REQ = 1
+        private const val STORAGE_PERMISSION_REQ = 2
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -58,6 +62,13 @@ class MainActivity : FlutterActivity() {
                 }
                 "getServerAddr" -> {
                     result.success(GoServerBridge.addr())
+                }
+                "getStorageOptions" -> {
+                    result.success(storageOptions())
+                }
+                "requestStoragePermission" -> {
+                    requestStoragePermission()
+                    result.success(null)
                 }
                 else -> {
                     result.notImplemented()
@@ -141,6 +152,100 @@ class MainActivity : FlutterActivity() {
             requestPermissions(
                 arrayOf(Manifest.permission.POST_NOTIFICATIONS),
                 NOTI_PERMISSION_REQ,
+            )
+        }
+    }
+
+    /**
+     * 下载存储位置：Android 11+ 用「所有文件访问」（MANAGE_EXTERNAL_STORAGE）
+     * 直接写公共目录；Android 10 及以下用 WRITE_EXTERNAL_STORAGE 运行时权限。
+     * 未授权时返回 granted=false，前端提示用户去系统设置开启。
+     */
+    private fun storagePermissionGranted(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+
+    /**
+     * 返回可选下载位置：内部存储 / SD 卡（如有）/ 应用私有目录（兜底，无需权限）。
+     */
+    private fun storageOptions(): Map<String, Any> {
+        val options = mutableListOf<Map<String, Any>>()
+        val externalRoot = Environment.getExternalStorageDirectory().absolutePath
+        options.add(
+            mapOf(
+                "label" to "内部存储",
+                "path" to "$externalRoot/Movies/VideoViewer",
+                "kind" to "internal",
+                "available" to true,
+            ),
+        )
+        sdVolumeRoot()?.let { root ->
+            options.add(
+                mapOf(
+                    "label" to "SD 卡",
+                    "path" to "$root/VideoViewer",
+                    "kind" to "external",
+                    "available" to true,
+                ),
+            )
+        }
+        options.add(
+            mapOf(
+                "label" to "应用私有目录（无需权限）",
+                "path" to (getExternalFilesDir(null)?.absolutePath ?: filesDir.absolutePath),
+                "kind" to "private",
+                "available" to true,
+            ),
+        )
+        return mapOf(
+            "granted" to storagePermissionGranted(),
+            "options" to options,
+        )
+    }
+
+    /**
+     * 可移动存储（SD 卡）卷根路径：从外部私有目录回溯到 /storage/<卷>。
+     * 目录形如 /storage/XXXX-XXXX/Android/data/<pkg>/files。
+     */
+    private fun sdVolumeRoot(): String? {
+        val dirs = getExternalFilesDirs(null)
+        for (i in 1 until dirs.size) {
+            val path = dirs[i]?.absolutePath ?: continue
+            val idx = path.indexOf("/Android/")
+            if (idx > 0) return path.substring(0, idx)
+        }
+        return null
+    }
+
+    /**
+     * 请求存储权限：Android 11+ 跳系统「所有文件访问」设置页（系统不提供弹窗
+     * 直授权），部分 ROM 无 per-app 入口时退到全局列表页；10 及以下为运行时弹窗。
+     */
+    private fun requestStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:$packageName"),
+                    ),
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "No per-app all-files page, fallback to global list", e)
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                } catch (e2: Exception) {
+                    Log.e(TAG, "No all-files access settings page", e2)
+                }
+            }
+        } else {
+            requestPermissions(
+                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                STORAGE_PERMISSION_REQ,
             )
         }
     }

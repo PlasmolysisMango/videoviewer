@@ -5,6 +5,7 @@ class Movie {
   final String? originTitle;
   final String? coverUrl;
   final String? thumbUrl;
+
   /// 竖版海报（2:3，来自 /thumbs/ 目录）。app API 的 cover/thumb 是横版剧照，
   /// 用竖版容器展示会裁剪成中间竖条；需要竖版展示时优先用 posterUrl。
   final String? posterUrl;
@@ -17,6 +18,7 @@ class Movie {
   final int? ranking;
   final String? href;
   final List<String>? previewImages;
+
   /// 演员名列表（app API 搜索/详情结果带，网页源列表为空）。
   final List<String>? actors;
 
@@ -288,5 +290,106 @@ class Tag {
       name: json['name'] as String,
       value: json['value'] as String?,
     );
+  }
+}
+
+/// 下载任务（后端 /api/downloads 的任务模型，异步队列）。
+/// status 取值：queued（排队）/ running（下载中）/ done / failed / canceled。
+class DownloadTask {
+  final String id;
+  final String code;
+  final String title;
+  final String cover;
+  final String source;
+  final String variant; // uncensored / cnsub / normal / ''
+  final int qualityHeight; // 0 = 未知/默认
+  final String dir;
+  final String status;
+  final int doneSegments;
+  final int totalSegments;
+  final int size;
+  final String filePath;
+  final String error;
+  final DateTime createdAt;
+
+  DownloadTask({
+    required this.id,
+    required this.code,
+    this.title = '',
+    this.cover = '',
+    this.source = '',
+    this.variant = '',
+    this.qualityHeight = 0,
+    this.dir = '',
+    this.status = 'queued',
+    this.doneSegments = 0,
+    this.totalSegments = 0,
+    this.size = 0,
+    this.filePath = '',
+    this.error = '',
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  factory DownloadTask.fromJson(Map<String, dynamic> json) {
+    return DownloadTask(
+      id: json['id'] as String,
+      code: json['code'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      cover: json['cover'] as String? ?? '',
+      source: json['source'] as String? ?? '',
+      variant: json['variant'] as String? ?? '',
+      qualityHeight: json['quality_height'] as int? ?? 0,
+      dir: json['dir'] as String? ?? '',
+      status: json['status'] as String? ?? 'queued',
+      doneSegments: json['done_segments'] as int? ?? 0,
+      totalSegments: json['total_segments'] as int? ?? 0,
+      size: json['size'] as int? ?? 0,
+      filePath: json['file_path'] as String? ?? '',
+      error: json['error'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? ''),
+    );
+  }
+
+  /// 下载进度 0~1；总分片数未知时按状态退化（已完成=1，其余=0）。
+  double get progress {
+    if (totalSegments > 0) return (doneSegments / totalSegments).clamp(0, 1);
+    return status == 'done' ? 1 : 0;
+  }
+
+  bool get isActive => status == 'queued' || status == 'running';
+  bool get isDone => status == 'done';
+
+  String get statusLabel {
+    switch (status) {
+      case 'queued':
+        return '排队中';
+      case 'running':
+        return totalSegments > 0 ? '下载中 $doneSegments/$totalSegments' : '下载中';
+      case 'done':
+        return '已完成';
+      case 'failed':
+        return '失败';
+      case 'canceled':
+        return '已取消';
+      default:
+        return status;
+    }
+  }
+
+  /// 清晰度标签（如 1080P），未知时不显示。
+  String get qualityLabel => qualityHeight > 0 ? '${qualityHeight}P' : '';
+
+  /// 变体标签（无码 / 中字 / 普通），普通或未知时为空。
+  String get variantLabel {
+    switch (variant) {
+      case 'uncensored':
+        return '无码';
+      case 'cnsub':
+        return '中字';
+      case 'normal':
+        return '普通';
+      default:
+        return '';
+    }
   }
 }

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../services/backend_launcher.dart';
+import 'models.dart';
 
 class JavDBClient {
   final String baseUrl;
@@ -668,6 +669,101 @@ class JavDBClient {
     } else {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'AV download failed');
+    }
+  }
+
+  // ---- 下载队列（异步任务，后端 /api/downloads） ----
+
+  /// 列出全部下载任务（最新在前）。
+  Future<List<DownloadTask>> listDownloads() async {
+    final uri = Uri.parse('$baseUrl/api/downloads');
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['tasks'] as List)
+          .map((t) => DownloadTask.fromJson(t as Map<String, dynamic>))
+          .toList();
+    }
+    final error = jsonDecode(response.body);
+    throw Exception(error['error'] ?? 'List downloads failed');
+  }
+
+  /// 创建下载任务（加入队列）；dir 空则由后端用默认下载目录。
+  Future<DownloadTask> createDownload({
+    required String code,
+    String title = '',
+    String cover = '',
+    String source = '',
+    String variant = '',
+    int qualityHeight = 0,
+    String dir = '',
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/downloads');
+    final response = await _http.post(uri,
+        headers: _headers,
+        body: jsonEncode({
+          'code': code,
+          'title': title,
+          'cover': cover,
+          'source': source,
+          'variant': variant,
+          'quality_height': qualityHeight,
+          'dir': dir,
+        }));
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return DownloadTask.fromJson(data['task'] as Map<String, dynamic>);
+    }
+    final error = jsonDecode(response.body);
+    throw Exception(error['error'] ?? 'Create download failed');
+  }
+
+  /// 取消任务（排队中/下载中）。
+  Future<void> cancelDownload(String id) async {
+    final uri = Uri.parse('$baseUrl/api/downloads/$id/cancel');
+    final response = await _http.post(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Cancel download failed');
+    }
+  }
+
+  /// 重试失败/已取消的任务。
+  Future<void> retryDownload(String id) async {
+    final uri = Uri.parse('$baseUrl/api/downloads/$id/retry');
+    final response = await _http.post(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Retry download failed');
+    }
+  }
+
+  /// 删除任务记录（deleteFile 为 true 时同时删除已下载文件）。
+  Future<void> deleteDownload(String id, {bool deleteFile = false}) async {
+    final uri = Uri.parse('$baseUrl/api/downloads/$id')
+        .replace(queryParameters: {'delete_file': deleteFile ? '1' : '0'});
+    final response = await _http.delete(uri, headers: _headers);
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Delete download failed');
+    }
+  }
+
+  /// 同步下载队列配置（并发上限 / 限速，speedLimitMbps=0 表示不限速）。
+  Future<void> setDownloadConfig({
+    required int maxConcurrent,
+    required int speedLimitMbps,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/downloads/config');
+    final response = await _http.post(uri,
+        headers: _headers,
+        body: jsonEncode({
+          'max_concurrent': maxConcurrent,
+          'speed_limit_mbps': speedLimitMbps,
+        }));
+    if (response.statusCode != 200) {
+      final error = jsonDecode(response.body);
+      throw Exception(error['error'] ?? 'Set download config failed');
     }
   }
 

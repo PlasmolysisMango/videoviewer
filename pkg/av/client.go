@@ -277,7 +277,16 @@ func (c *Client) Download(ctx context.Context, code string, dstDir string, opt D
 	code = normalizeCode(code)
 	opt = opt.withDefaults()
 
-	streams, err := c.Resolve(ctx, code, opt.Source)
+	// 指定变体时只解析该变体（与播放路径的惰性加载一致），否则全量解析。
+	var (
+		streams []Stream
+		err     error
+	)
+	if opt.Variant != "" {
+		streams, err = c.ResolveVariant(ctx, code, opt.Variant, opt.Source)
+	} else {
+		streams, err = c.Resolve(ctx, code, opt.Source)
+	}
 	if err != nil {
 		return nil, err
 	}

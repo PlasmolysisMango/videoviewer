@@ -17,6 +17,7 @@ import '../services/logger.dart';
 import '../widgets/common_ui.dart';
 import 'actor_catalog_screen.dart';
 import 'collection_screen.dart';
+import 'downloads_screen.dart';
 import 'favorites_screen.dart';
 import 'genre_catalog_screen.dart';
 import 'genre_screen.dart';
@@ -360,6 +361,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 context, Icons.history, '历史记录', () => const HistoryScreen()),
             _buildDrawerItem(context, Icons.playlist_add_check, '我的清单',
                 () => const UserListsScreen()),
+            _buildDrawerItem(context, Icons.download_outlined, '下载',
+                () => const DownloadsScreen()),
             _buildDrawerItem(context, Icons.settings_outlined, '设置',
                 () => const SettingsScreen()),
             _buildDrawerItem(
