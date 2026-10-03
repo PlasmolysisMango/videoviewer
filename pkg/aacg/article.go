@@ -114,9 +114,11 @@ func articleVideos(article *goquery.Selection, base *url.URL) ([]VideoLink, erro
 			parseErr = fmt.Errorf("aacg article: invalid player config: %w", err)
 			return false
 		}
+		// video 与 video_h265 是同一视频的两种编码，浏览器按能力择一播放；
+		// 这里优先 H.264 主源，仅在缺失时回退 H.265，避免重复播放按钮。
 		sources := config.VideoH265
 		if config.Video != nil {
-			sources = append([]dplayerSource{*config.Video}, sources...)
+			sources = []dplayerSource{*config.Video}
 		}
 		for _, source := range sources {
 			address, err := contentURL(base, source.URL)

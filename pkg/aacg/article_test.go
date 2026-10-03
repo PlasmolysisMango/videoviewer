@@ -123,7 +123,7 @@ func TestArticle(t *testing.T) {
 			t.Fatalf("h265 fallback = %+v, %v; want videos %+v", got, err, want)
 		}
 	})
-	t.Run("dedupe sources", func(t *testing.T) {
+	t.Run("prefer h264 and dedupe", func(t *testing.T) {
 		page := articleTestPage(articleTestArticle(
 			articleTestHeadline,
 			articleTestBody(
@@ -134,10 +134,7 @@ func TestArticle(t *testing.T) {
 		))
 		srv, _ := articleTestServe(t, page)
 		got, err := newTestClient(t, srv, "").Article(context.Background(), srv.URL+"/archives/1/")
-		want := []VideoLink{
-			{URL: "https://cdn.example.invalid/main.m3u8", Type: "hls"},
-			{URL: "https://cdn.example.invalid/backup.m3u8", Type: "hls"},
-		}
+		want := []VideoLink{{URL: "https://cdn.example.invalid/main.m3u8", Type: "hls"}}
 		if err != nil || !reflect.DeepEqual(got.Videos, want) {
 			t.Fatalf("dedupe sources = %+v, %v; want %+v", got.Videos, err, want)
 		}
