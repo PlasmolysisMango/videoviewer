@@ -244,6 +244,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/aacg/feed", s.handleAacgFeed)
 	mux.HandleFunc("GET /api/aacg/search", s.handleAacgSearch)
 	mux.HandleFunc("GET /api/aacg/article", s.handleAacgArticle)
+	mux.HandleFunc("GET /api/aacg/image", s.handleAacgImage)
 
 	// Apply CORS middleware
 	handler := cors(mux)

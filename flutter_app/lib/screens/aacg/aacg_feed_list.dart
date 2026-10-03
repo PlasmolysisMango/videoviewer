@@ -195,7 +195,7 @@ class _AacgArticleTile extends StatelessWidget {
                 height: 72,
                 child: cover.isNotEmpty
                     ? CachedNetworkImage(
-                        imageUrl: resolveImageUrl(cover),
+                        imageUrl: aacgImageUrl(cover),
                         fit: BoxFit.cover,
                         memCacheWidth: 336, // 112dp×3x：列表小图按显示尺寸解码
                         placeholder: (_, __) =>

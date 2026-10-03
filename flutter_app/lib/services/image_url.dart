@@ -10,3 +10,10 @@ String resolveImageUrl(String url) {
   if (url.isEmpty || !kIsWeb) return url;
   return '${BackendLauncher.baseUrl}/api/img?url=${Uri.encodeComponent(url)}';
 }
+
+/// AACG 封面/缩略图是站点 AES 混淆密文，任何平台直连都无法解码，
+/// 统一经后端 `/api/aacg/image` 解密转发。
+String aacgImageUrl(String url) {
+  if (url.isEmpty) return url;
+  return '${BackendLauncher.baseUrl}/api/aacg/image?url=${Uri.encodeComponent(url)}';
+}

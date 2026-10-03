@@ -161,6 +161,29 @@ func (s *Server) handleAacgSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, aacgListJSON(list))
 }
 
+// 图片代理：封面/缩略图是站点 AES 混淆密文，客户端无法直接解码，
+// 由 pkg/aacg 解密后转发；URL 来自本服务此前返回的列表/详情响应。
+func (s *Server) handleAacgImage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAacg(w) {
+		return
+	}
+	imageURL := r.URL.Query().Get("url")
+	if imageURL == "" {
+		writeError(w, http.StatusBadRequest, "url parameter required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), aacgTimeout)
+	defer cancel()
+	data, contentType, err := s.aacg.Image(ctx, imageURL)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(data)
+}
+
 // 文章详情：URL 来自列表响应，直连抓取（视频 URL 可能含一次性 auth_key，仅返回给本机前端）。
 func (s *Server) handleAacgArticle(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAacg(w) {

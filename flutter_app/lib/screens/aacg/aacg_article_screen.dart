@@ -113,7 +113,7 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
             aspectRatio: 16 / 9,
             child: cover.isNotEmpty
                 ? CachedNetworkImage(
-                    imageUrl: resolveImageUrl(cover),
+                    imageUrl: aacgImageUrl(cover),
                     fit: BoxFit.cover,
                     placeholder: (_, __) =>
                         Container(color: Theme.of(context).dividerColor),

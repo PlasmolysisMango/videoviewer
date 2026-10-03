@@ -1,6 +1,9 @@
 package goserver
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -323,6 +326,67 @@ func TestAacgArticleHandler(t *testing.T) {
 	}
 }
 
+// aacgTestEncryptImage 复刻站点图片混淆（AES-128-CBC + PKCS7），供代理解密测试用。
+func aacgTestEncryptImage(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	block, err := aes.NewCipher([]byte("f5d965df75336270"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := aes.BlockSize - len(plain)%aes.BlockSize
+	padded := append(append([]byte(nil), plain...), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	encrypted := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte("97b60394abc2fbe1")).CryptBlocks(encrypted, padded)
+	return encrypted
+}
+
+func TestAacgImageHandler(t *testing.T) {
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 'J', 'F', 'I', 'F', 1, 2, 3}
+	encrypted := aacgTestEncryptImage(t, jpeg)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cover.jpeg":
+			w.Write(encrypted)
+		case "/no-image.bin":
+			fmt.Fprint(w, "not an image")
+		default:
+			t.Errorf("unexpected image request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	s := newAacgTestServer(t, upstream)
+
+	target := "/api/aacg/image?" + url.Values{"url": {upstream.URL + "/cover.jpeg"}}.Encode()
+	rec := httptest.NewRecorder()
+	s.handleAacgImage(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("Content-Type = %q, want image/jpeg", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=86400" {
+		t.Fatalf("Cache-Control = %q, want public, max-age=86400", cc)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), jpeg) {
+		t.Fatalf("body = %x, want %x", rec.Body.Bytes(), jpeg)
+	}
+
+	// 缺少 url → 400
+	code, _ := aacgGetJSON(t, s.handleAacgImage, "/api/aacg/image")
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing url status = %d, want 400", code)
+	}
+
+	// 上游返回无法识别的载荷 → 502
+	garbage := "/api/aacg/image?" + url.Values{"url": {upstream.URL + "/no-image.bin"}}.Encode()
+	code, _ = aacgGetJSON(t, s.handleAacgImage, garbage)
+	if code != http.StatusBadGateway {
+		t.Fatalf("unrecognized payload status = %d, want 502", code)
+	}
+}
+
 func TestAacgInvalidateOnFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -347,6 +411,7 @@ func TestAacgClientUnavailable(t *testing.T) {
 		"feed":       s.handleAacgFeed,
 		"search":     s.handleAacgSearch,
 		"article":    s.handleAacgArticle,
+		"image":      s.handleAacgImage,
 	} {
 		code, _ := aacgGetJSON(t, h, "/api/aacg/"+name)
 		if code != http.StatusServiceUnavailable {

@@ -126,6 +126,7 @@ HTTP API 一览（全部 JSON）：
 | | `GET /api/av/probe/:code`、`/api/av/resolve/:code`、`/api/av/play/:code` | 变体探测 / 全流解析 / 最优流 |
 | | `POST /api/av/download/:code`、`POST /api/av/cf-cookie` | 下载 / 注入 Cloudflare 凭据 |
 | AACG | `GET /api/aacg/home`、`/api/aacg/categories`、`/api/aacg/feed`、`/api/aacg/search`、`/api/aacg/article` | 专栏流：推荐 / 分类 / 搜索 / 文章详情（镜像自动发现，30 分钟缓存） |
+| | `GET /api/aacg/image` | 封面/缩略图代理（站点 AES 混淆密文，服务端解密后转发） |
 | 媒体 | `GET /api/img`、`GET /api/hls/playlist`、`GET /api/hls/segment` | 图片与 HLS 代理（Web 播放用） |
 
 ---
