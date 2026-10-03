@@ -15,6 +15,7 @@ import '../services/data_cache.dart';
 import '../services/image_url.dart';
 import '../services/logger.dart';
 import '../widgets/common_ui.dart';
+import 'aacg/aacg_section_screen.dart';
 import 'actor_catalog_screen.dart';
 import 'collection_screen.dart';
 import 'downloads_screen.dart';
@@ -361,6 +362,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 context, Icons.history, '历史记录', () => const HistoryScreen()),
             _buildDrawerItem(context, Icons.playlist_add_check, '我的清单',
                 () => const UserListsScreen()),
+            _buildDrawerItem(context, Icons.newspaper, 'AACG 专栏',
+                () => const AacgSectionScreen()),
             _buildDrawerItem(context, Icons.download_outlined, '下载',
                 () => const DownloadsScreen()),
             _buildDrawerItem(context, Icons.settings_outlined, '设置',

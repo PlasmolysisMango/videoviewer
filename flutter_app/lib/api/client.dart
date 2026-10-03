@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../services/backend_launcher.dart';
+import 'aacg_models.dart';
 import 'models.dart';
 
 class JavDBClient {
@@ -849,5 +850,54 @@ class JavDBClient {
       final error = jsonDecode(response.body);
       throw Exception(error['error'] ?? 'Subtitle download failed');
     }
+  }
+
+  // ---- AACG 专栏（镜像站，后端 /api/aacg/*） ----
+
+  /// GET 并解析 JSON；非 200 统一抛出后端 error 文案。
+  Future<Map<String, dynamic>> _getJson(Uri uri) async {
+    final response = await _http.get(uri, headers: _headers);
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    final error = jsonDecode(response.body);
+    throw Exception(error['error'] ?? 'Request failed');
+  }
+
+  /// 推荐流（首页 feed）第 page 页；镜像由后端自动发现并缓存。
+  Future<AacgFeedPage> aacgHome({int page = 1}) async {
+    final uri = Uri.parse('$baseUrl/api/aacg/home')
+        .replace(queryParameters: {'page': page.toString()});
+    return AacgFeedPage.fromJson(await _getJson(uri));
+  }
+
+  /// 站点分类导航列表。
+  Future<List<AacgCategory>> aacgCategories() async {
+    final data = await _getJson(Uri.parse('$baseUrl/api/aacg/categories'));
+    return (data['categories'] as List<dynamic>?)
+            ?.map((e) => AacgCategory.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        const <AacgCategory>[];
+  }
+
+  /// 分类流第 page 页；url 来自 aacgCategories 的分类条目。
+  Future<AacgFeedPage> aacgFeed(String url, {int page = 1}) async {
+    final uri = Uri.parse('$baseUrl/api/aacg/feed')
+        .replace(queryParameters: {'url': url, 'page': page.toString()});
+    return AacgFeedPage.fromJson(await _getJson(uri));
+  }
+
+  /// 站内搜索第 page 页。
+  Future<AacgFeedPage> aacgSearch(String query, {int page = 1}) async {
+    final uri = Uri.parse('$baseUrl/api/aacg/search')
+        .replace(queryParameters: {'q': query, 'page': page.toString()});
+    return AacgFeedPage.fromJson(await _getJson(uri));
+  }
+
+  /// 文章详情（正文 + 视频链接）。
+  Future<AacgArticleDetail> aacgArticle(String url) async {
+    final uri = Uri.parse('$baseUrl/api/aacg/article')
+        .replace(queryParameters: {'url': url});
+    return AacgArticleDetail.fromJson(await _getJson(uri));
   }
 }
