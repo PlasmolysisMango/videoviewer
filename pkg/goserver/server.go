@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"videoviewer/pkg/aacg"
 	"videoviewer/pkg/av"
 	"videoviewer/pkg/av/browser"
 	"videoviewer/pkg/javdb"
@@ -69,6 +70,12 @@ type Server struct {
 	// 抓取重而探测结果变化慢，详情页反复进出时复用。
 	avProbeMu    sync.Mutex
 	avProbeCache map[string]avProbeEntry
+
+	// AACG 专栏：镜像发现结果缓存（见 aacg_handlers.go）。
+	aacg       *aacg.Client
+	aacgMu     sync.Mutex
+	aacgTarget aacg.Target
+	aacgAt     time.Time
 }
 
 // New creates a new Server with the given configuration.
@@ -129,6 +136,13 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
+	// AACG 专栏客户端：镜像自动发现 + 解析，目标缓存见 aacg_handlers.go。
+	// 构造失败非致命：仅该专栏返回 503，不影响其余功能。
+	aacgClient, err := aacg.New(aacg.Options{Proxy: cfg.Proxy})
+	if err != nil {
+		log.Printf("goserver: aacg client init failed: %v", err)
+	}
+
 	// 图片代理客户端：与主链路一致地走配置的代理。
 	imgTransport := http.DefaultTransport.(*http.Transport).Clone()
 	if cfg.Proxy != "" {
@@ -141,6 +155,7 @@ func New(cfg Config) (*Server, error) {
 	srv := &Server{
 		javdb:     javdbClient,
 		av:        avClient,
+		aacg:      aacgClient,
 		cfg:       cfg,
 		imgClient: imgClient,
 		username:  savedUser,
@@ -223,6 +238,12 @@ func (s *Server) Start() error {
 	// can play Referer-gated CDNs like surrit
 	mux.HandleFunc("GET /api/hls/playlist", s.handleHlsPlaylist)
 	mux.HandleFunc("GET /api/hls/segment", s.handleHlsSegment)
+	// AACG 专栏（镜像自动发现，30 分钟目标缓存）
+	mux.HandleFunc("GET /api/aacg/home", s.handleAacgHome)
+	mux.HandleFunc("GET /api/aacg/categories", s.handleAacgCategories)
+	mux.HandleFunc("GET /api/aacg/feed", s.handleAacgFeed)
+	mux.HandleFunc("GET /api/aacg/search", s.handleAacgSearch)
+	mux.HandleFunc("GET /api/aacg/article", s.handleAacgArticle)
 
 	// Apply CORS middleware
 	handler := cors(mux)
