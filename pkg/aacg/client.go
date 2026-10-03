@@ -187,6 +187,14 @@ var reservedNetworks = []netip.Prefix{
 
 func publicIP(ip netip.Addr) bool {
 	ip = ip.Unmap()
+	// NAT64 well-known prefix (RFC 6052): synthesized by DNS64 on IPv6-only
+	// carrier networks. Unwrap the embedded IPv4 and judge it by the same
+	// public-address rules so real public destinations stay reachable while
+	// embedded private/loopback addresses remain blocked.
+	if ip.Is6() && netip.MustParsePrefix("64:ff9b::/96").Contains(ip) {
+		b := ip.As16()
+		ip = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	}
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 		return false
 	}
@@ -201,6 +209,38 @@ func publicIP(ip netip.Addr) bool {
 	return true
 }
 
+// publicDialIPs keeps only public candidates from a DNS answer. Mixed answers
+// (real public records alongside synthesized NAT64 or injected non-public
+// addresses) must not veto the whole dial; an empty result means no candidate
+// is dialable.
+func publicDialIPs(ips []netip.Addr) []netip.Addr {
+	var out []netip.Addr
+	for _, ip := range ips {
+		if publicIP(ip) {
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
+// fakeIPNet is the default Clash/sing-box TUN fake-ip range. Under such a VPN
+// every lookup answers inside it and the tunnel maps the address back to the
+// hostname, so these are dialable despite not being public.
+var fakeIPNet = netip.MustParsePrefix("198.18.0.0/15")
+
+func dialCandidates(ips []netip.Addr) []netip.Addr {
+	if dialable := publicDialIPs(ips); len(dialable) > 0 {
+		return dialable
+	}
+	var out []netip.Addr
+	for _, ip := range ips {
+		if fakeIPNet.Contains(ip.Unmap()) {
+			out = append(out, ip.Unmap())
+		}
+	}
+	return out
+}
+
 func dialPublic(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -210,20 +250,23 @@ func dialPublic(ctx context.Context, network, address string) (net.Conn, error) 
 	if err != nil {
 		return nil, err
 	}
-	for _, ip := range ips {
-		if !publicIP(ip) {
-			return nil, fmt.Errorf("aacg: DNS resolved to a non-public address")
+	dialable := dialCandidates(ips)
+	if len(dialable) == 0 {
+		parts := make([]string, len(ips))
+		for i, ip := range ips {
+			parts[i] = ip.String()
 		}
+		return nil, fmt.Errorf("aacg: DNS resolved to a non-public address: %s (%s)", host, strings.Join(parts, ", "))
 	}
 	var failures []error
-	for _, ip := range ips {
+	for _, ip := range dialable {
 		conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		if err == nil {
 			return conn, nil
 		}
 		failures = append(failures, err)
 	}
-	return nil, fmt.Errorf("aacg: no reachable public address: %w", errors.Join(failures...))
+	return nil, fmt.Errorf("aacg: no reachable address: %w", errors.Join(failures...))
 }
 
 func takeHop(budget *int) error {

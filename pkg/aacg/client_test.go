@@ -312,7 +312,7 @@ func TestTimeoutAndCancellation(t *testing.T) {
 }
 
 func TestPublicDestinations(t *testing.T) {
-	for _, raw := range []string{"127.0.0.1", "::1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "::ffff:127.0.0.1", "fc00::1", "fe80::1", "100.64.0.1", "192.0.2.1", "2001:db8::1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "64:ff9b::7f00:1"} {
+	for _, raw := range []string{"127.0.0.1", "::1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "::ffff:127.0.0.1", "fc00::1", "fe80::1", "100.64.0.1", "192.0.2.1", "198.18.0.1", "::ffff:198.18.0.1", "2001:db8::1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "64:ff9b::7f00:1", "64:ff9b::a00:1", "64:ff9b::c0a8:101"} {
 		t.Run(raw, func(t *testing.T) {
 			if publicIP(netip.MustParseAddr(raw)) {
 				t.Fatalf("non-public IP allowed: %s", raw)
@@ -323,7 +323,7 @@ func TestPublicDestinations(t *testing.T) {
 			}
 		})
 	}
-	for _, raw := range []string{"1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"} {
+	for _, raw := range []string{"1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "64:ff9b::808:808"} {
 		if !publicIP(netip.MustParseAddr(raw)) {
 			t.Fatalf("public IP rejected: %s", raw)
 		}
@@ -333,8 +333,8 @@ func TestPublicDestinations(t *testing.T) {
 			t.Fatalf("invalid entry accepted: %s", raw)
 		}
 	}
-	if _, err := dialPublic(context.Background(), "tcp", "127.0.0.1:80"); err == nil {
-		t.Fatal("dialer allowed local address")
+	if _, err := dialPublic(context.Background(), "tcp", "127.0.0.1:80"); err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("dialer allowed local address: %v", err)
 	}
 	c, err := New(Options{})
 	if err != nil {
@@ -344,6 +344,59 @@ func TestPublicDestinations(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://169.254.169.254/", nil)
 	if err := c.http.CheckRedirect(req, nil); err == nil || !strings.Contains(err.Error(), "non-public") {
 		t.Fatalf("private redirect not blocked: %v", err)
+	}
+}
+
+func TestPublicDialIPs(t *testing.T) {
+	pub4 := netip.MustParseAddr("8.8.8.8")
+	pub6 := netip.MustParseAddr("2606:4700:4700::1111")
+	nat64Pub := netip.MustParseAddr("64:ff9b::808:808")
+	priv := netip.MustParseAddr("192.168.1.1")
+	nat64Priv := netip.MustParseAddr("64:ff9b::c0a8:101")
+	fake := netip.MustParseAddr("198.18.0.1")
+	loop := netip.MustParseAddr("127.0.0.1")
+	cases := []struct {
+		name string
+		in   []netip.Addr
+		want int
+	}{
+		{"mixed answer keeps public only", []netip.Addr{pub4, priv, nat64Priv, fake, pub6, nat64Pub}, 3},
+		{"all non-public", []netip.Addr{priv, loop, nat64Priv}, 0},
+		{"single public", []netip.Addr{pub4}, 1},
+		{"fake-ip is not public", []netip.Addr{fake}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := publicDialIPs(tc.in); len(got) != tc.want {
+				t.Fatalf("publicDialIPs(%v) = %v, want %d entries", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDialCandidates(t *testing.T) {
+	pub4 := netip.MustParseAddr("8.8.8.8")
+	pub6 := netip.MustParseAddr("2606:4700:4700::1111")
+	fake := netip.MustParseAddr("198.18.0.1")
+	fakeUnmapped := netip.MustParseAddr("198.18.0.2")
+	priv := netip.MustParseAddr("192.168.1.1")
+	loop := netip.MustParseAddr("127.0.0.1")
+	cases := []struct {
+		name string
+		in   []netip.Addr
+		want []netip.Addr
+	}{
+		{"public wins over fake-ip", []netip.Addr{fake, pub4, pub6}, []netip.Addr{pub4, pub6}},
+		{"fake-ip fallback when alone", []netip.Addr{fake}, []netip.Addr{fake}},
+		{"mapped fake-ip is unmapped", []netip.Addr{netip.MustParseAddr("::ffff:198.18.0.2")}, []netip.Addr{fakeUnmapped}},
+		{"private only yields none", []netip.Addr{priv, loop}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dialCandidates(tc.in); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("dialCandidates(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
