@@ -5,11 +5,15 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -75,6 +79,99 @@ func aacgTestArticlePage() string {
 		`<p><img src="/usr/plugins/tbxw/zw.png?v=3" data-xuid="1" data-xkrkllgl="https://pic.example.invalid/body.jpeg" /></p>` +
 		`<div class="post-near"><nav><span class="prev"><a href="/archives/9/" title="Earlier post"><span class="post-near-span"><span class="prev-t">上一篇: </span><br><span>previous entry</span></span></a></span><span class="next"><a href="/archives/21/">Later entry</a></span></nav></div>` +
 		`</div></article></div></body></html>`
+}
+
+// aacgTestHomePage 可识别镜像首页（title 含 51吃瓜 + 首页文章项）。
+func aacgTestHomePage() string {
+	return `<!doctype html><html><head><title>51吃瓜网 - fixture</title></head><body>` + aacgTestIndex(aacgTestCardOne) + `</body></html>`
+}
+
+// aacgTestFlakyUpstream 构造发现链路网络级瞬断的上游：/entry 在 hijack 后立即
+// 断连（客户端侧表现为 EOF/连接重置一类），/ 是可识别首页；记录各路径命中数。
+func aacgTestFlakyUpstream(t *testing.T) (*httptest.Server, func(string) int) {
+	t.Helper()
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits[r.URL.Path]++
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/entry":
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("hijack unsupported")
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			conn.Close()
+		case "/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, aacgTestHomePage())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func(path string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits[path]
+	}
+}
+
+// aacgTestForwardPage 入口转发页：脚本联动锚点，forwardingURL 从这里取落地地址。
+const aacgTestForwardPage = `<script>document.getElementById('forward').click()</script><a id="forward" href="/landing">跳转</a>`
+
+type aacgTestRoute struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Badge string `json:"badge"`
+}
+
+// aacgTestConfigScript 复刻站点 window.appConfig 混淆（AES-256-CBC + PKCS7，
+// key = sha256(keyStr)，正文 base64(iv||ciphertext)），供发现链路 fixture 使用。
+func aacgTestConfigScript(key string, payload []byte) string {
+	sum := sha256.Sum256([]byte(key))
+	block, err := aes.NewCipher(sum[:])
+	if err != nil {
+		panic(err) // sha256 恒为 32 字节，不可达
+	}
+	iv := bytes.Repeat([]byte{0x5a}, aes.BlockSize)
+	padding := aes.BlockSize - len(payload)%aes.BlockSize
+	padded := append(append([]byte(nil), payload...), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	encoded := make([]byte, aes.BlockSize+len(padded))
+	copy(encoded, iv)
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(encoded[aes.BlockSize:], padded)
+	return `window.appConfig = {data: "` + base64.StdEncoding.EncodeToString(encoded) + `", key: "` + key + `"};`
+}
+
+// aacgTestDiscoveryPage 生成落地页：内联 appConfig 指向给定的镜像路由。
+func aacgTestDiscoveryPage(routes ...aacgTestRoute) string {
+	payload, err := json.Marshal(map[string][]aacgTestRoute{"domain": routes})
+	if err != nil {
+		panic(err)
+	}
+	return `<script>` + aacgTestConfigScript("fixture-key", payload) + `</script>`
+}
+
+// useTempDataDir 把持久化目录指向测试临时目录并在结束后还原
+// （持久化写盘测试不得触碰真实的 ~/.videoviewer）。
+func useTempDataDir(t *testing.T) {
+	t.Helper()
+	dataDirMu.Lock()
+	prev := dataDir
+	dataDir = t.TempDir()
+	dataDirMu.Unlock()
+	t.Cleanup(func() {
+		dataDirMu.Lock()
+		dataDir = prev
+		dataDirMu.Unlock()
+	})
 }
 
 // aacgTestUpstream 起一个按路径分发 fixture 的上游并记录请求路径。
@@ -658,43 +755,7 @@ func TestAacgClientUnavailable(t *testing.T) {
 
 // 发现链路持续瞬断时的旧目标兜底：缓存过期后重发现失败，会话内旧目标若经
 // Check 校验仍为可识别首页，则刷新缓存续用；旧目标不可用时返回原始发现错误。
-// 入口以 hijack 后立即断连模拟网络级瞬断（客户端侧为 EOF/连接重置一类）。
 func TestAacgUsableTargetStaleFallback(t *testing.T) {
-	newUpstream := func(t *testing.T) (*httptest.Server, func(string) int) {
-		t.Helper()
-		var mu sync.Mutex
-		hits := map[string]int{}
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mu.Lock()
-			hits[r.URL.Path]++
-			mu.Unlock()
-			switch r.URL.Path {
-			case "/entry":
-				hijacker, ok := w.(http.Hijacker)
-				if !ok {
-					t.Error("hijack unsupported")
-					return
-				}
-				conn, _, err := hijacker.Hijack()
-				if err != nil {
-					t.Errorf("hijack: %v", err)
-					return
-				}
-				conn.Close()
-			case "/":
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				fmt.Fprint(w, `<!doctype html><html><head><title>51吃瓜网 - fixture</title></head><body>`+aacgTestIndex(aacgTestCardOne)+`</body></html>`)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-		t.Cleanup(srv.Close)
-		return srv, func(path string) int {
-			mu.Lock()
-			defer mu.Unlock()
-			return hits[path]
-		}
-	}
 	newStaleServer := func(t *testing.T, upstream *httptest.Server, stale string) *Server {
 		t.Helper()
 		client, err := aacg.New(aacg.Options{
@@ -711,7 +772,7 @@ func TestAacgUsableTargetStaleFallback(t *testing.T) {
 	}
 
 	t.Run("stale target still usable", func(t *testing.T) {
-		upstream, hits := newUpstream(t)
+		upstream, hits := aacgTestFlakyUpstream(t)
 		s := newStaleServer(t, upstream, upstream.URL+"/")
 		target, err := s.aacgUsableTarget(context.Background())
 		if err != nil {
@@ -732,7 +793,7 @@ func TestAacgUsableTargetStaleFallback(t *testing.T) {
 	})
 
 	t.Run("stale target unusable", func(t *testing.T) {
-		upstream, hits := newUpstream(t)
+		upstream, hits := aacgTestFlakyUpstream(t)
 		s := newStaleServer(t, upstream, upstream.URL+"/missing")
 		target, err := s.aacgUsableTarget(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "aacg discover") {
@@ -748,4 +809,245 @@ func TestAacgUsableTargetStaleFallback(t *testing.T) {
 			t.Fatalf("stale verify hits = %d, want 1", hits("/missing"))
 		}
 	})
+
+	t.Run("stale target deduped against known list", func(t *testing.T) {
+		upstream, hits := aacgTestFlakyUpstream(t)
+		s := newStaleServer(t, upstream, upstream.URL+"/missing")
+		s.aacgKnown = []aacg.Target{{URL: upstream.URL + "/missing"}}
+		target, err := s.aacgUsableTarget(context.Background())
+		if err == nil || target.URL != "" {
+			t.Fatalf("target = %+v, err = %v, want discovery failure", target, err)
+		}
+		if hits("/missing") != 1 {
+			t.Fatalf("stale verify hits = %d, want 1 (same URL deduped)", hits("/missing"))
+		}
+	})
+}
+
+// 镜像列表持久化：写回可读回；损坏/非法条目按无缓存或跳过处理。
+func TestAacgTargetsPersistence(t *testing.T) {
+	useTempDataDir(t)
+	saved := []aacg.Target{
+		{Name: "主站", URL: "https://a.example.invalid/", Badge: "推荐访问", Kind: "primary"},
+		{Name: "备站", URL: "http://b.example.invalid/", Kind: "backup"},
+	}
+	saveAacgTargets(saved)
+	if got := loadAacgTargets(); !reflect.DeepEqual(got, saved) {
+		t.Fatalf("targets = %+v, want %+v", got, saved)
+	}
+
+	// 手改/损坏的文件：非法条目跳过，非 JSON 整体视为无缓存。
+	path, err := aacgTargetsFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"targets":[{"name":"bad","url":"file:///etc/passwd"},{"name":"odd","url":"/relative"},{"name":"ok","url":"https://c.example.invalid/"}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadAacgTargets(); len(got) != 1 || got[0].URL != "https://c.example.invalid/" {
+		t.Fatalf("filtered targets = %+v, want one https entry", got)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadAacgTargets(); got != nil {
+		t.Fatalf("corrupt cache = %+v, want nil", got)
+	}
+}
+
+// 冷启动兜底（模拟重启后内存缓存为空）：发现链路瞬断时回退到持久化列表中
+// 仍可用的镜像，并刷新会话内目标缓存。
+func TestAacgUsableTargetColdStartFallback(t *testing.T) {
+	useTempDataDir(t)
+	upstream, hits := aacgTestFlakyUpstream(t)
+	client, err := aacg.New(aacg.Options{
+		EntryURL:  upstream.URL + "/entry",
+		Transport: upstream.Client().Transport,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{aacg: client}
+	s.aacgKnown = []aacg.Target{{Name: "恢复", URL: upstream.URL + "/", Kind: "primary"}}
+
+	target, err := s.aacgUsableTarget(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.URL != upstream.URL+"/" {
+		t.Fatalf("target = %+v, want known %s", target, upstream.URL+"/")
+	}
+	if s.aacgTarget.URL != target.URL || time.Since(s.aacgAt) >= aacgTargetTTL {
+		t.Fatalf("known fallback did not refresh target cache: %+v @ %v", s.aacgTarget, s.aacgAt)
+	}
+	if hits("/entry") < 2 {
+		t.Fatalf("entry hits = %d, want discovery retries before fallback", hits("/entry"))
+	}
+	if hits("/") != 1 {
+		t.Fatalf("known verify hits = %d, want 1", hits("/"))
+	}
+}
+
+// 发现链路完整可用时：逐个校验发现出的目标（不可用的跳过），选中后写回会话
+// 缓存与持久化列表（跨重启兜底的数据来源）。
+func TestAacgUsableTargetPersistsDiscovery(t *testing.T) {
+	useTempDataDir(t)
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/entry":
+			fmt.Fprint(w, aacgTestForwardPage)
+		case "/landing":
+			fmt.Fprint(w, aacgTestDiscoveryPage(
+				aacgTestRoute{Name: "主站", Value: "http://" + r.Host + "/missing", Badge: "推荐访问"},
+				aacgTestRoute{Name: "备用线路", Value: "http://" + r.Host + "/home"},
+			))
+		case "/home":
+			fmt.Fprint(w, aacgTestHomePage())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	client, err := aacg.New(aacg.Options{
+		EntryURL:  upstream.URL + "/entry",
+		Transport: upstream.Client().Transport,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{aacg: client}
+
+	target, err := s.aacgUsableTarget(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.URL != upstream.URL+"/home" {
+		t.Fatalf("target = %+v, want usable second route", target)
+	}
+	if s.aacgTarget != target || time.Since(s.aacgAt) >= aacgTargetTTL {
+		t.Fatalf("target cache not set: %+v @ %v", s.aacgTarget, s.aacgAt)
+	}
+	want := []aacg.Target{
+		{Name: "主站", URL: upstream.URL + "/missing", Badge: "推荐访问", Kind: "primary"},
+		{Name: "备用线路", URL: upstream.URL + "/home", Kind: "primary"},
+	}
+	if !reflect.DeepEqual(s.aacgKnown, want) {
+		t.Fatalf("known = %+v, want %+v", s.aacgKnown, want)
+	}
+	if got := loadAacgTargets(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("persisted = %+v, want %+v", got, want)
+	}
+	mu.Lock()
+	got := append([]string(nil), paths...)
+	mu.Unlock()
+	aacgWantPaths(t, got, "/entry", "/landing", "/missing", "/home")
+}
+
+// home 抓取失败后的自愈：失效旧镜像缓存 → 重新发现 → 校验出可用新镜像后
+// 重试内容抓取一次；响应 site 与目标缓存都指向新镜像。
+func TestAacgHomeFreshTargetRetry(t *testing.T) {
+	useTempDataDir(t)
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/entry":
+			fmt.Fprint(w, aacgTestForwardPage)
+		case "/landing":
+			fmt.Fprint(w, aacgTestDiscoveryPage(
+				aacgTestRoute{Name: "主站", Value: "http://" + r.Host + "/category/dead/", Badge: "推荐访问"},
+				aacgTestRoute{Name: "备用线路", Value: "http://" + r.Host + "/"},
+			))
+		case "/category/dead/":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/":
+			fmt.Fprint(w, aacgTestHomePage())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	client, err := aacg.New(aacg.Options{
+		EntryURL:  upstream.URL + "/entry",
+		Transport: upstream.Client().Transport,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{aacg: client}
+	s.aacgTarget = aacg.Target{URL: upstream.URL + "/category/dead/"}
+	s.aacgAt = time.Now()
+
+	code, body := aacgGetJSON(t, s.handleAacgHome, "/api/aacg/home")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", code, body)
+	}
+	aacgWantString(t, body, "site", upstream.URL+"/")
+	aacgWantItems(t, body, 1)
+
+	// 重试成功：目标缓存指向新镜像且未再被失效。
+	if s.aacgTarget.URL != upstream.URL+"/" || time.Since(s.aacgAt) >= aacgTargetTTL {
+		t.Fatalf("target cache = %+v @ %v, want fresh root target", s.aacgTarget, s.aacgAt)
+	}
+	mu.Lock()
+	got := append([]string(nil), paths...)
+	mu.Unlock()
+	aacgWantPaths(t, got, "/category/dead/", "/entry", "/landing", "/category/dead/", "/", "/")
+}
+
+// 旧镜像域名兜底：feed 的 url 指向已轮换的旧主机时，把主机改写到当前镜像
+// 重试一次；同源失败不做重复请求，重试仍失败照常 502。
+func TestAacgFeedRebaseRetry(t *testing.T) {
+	var deadMu sync.Mutex
+	deadHits := 0
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deadMu.Lock()
+		deadHits++
+		deadMu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(dead.Close)
+
+	upstream, paths := aacgTestUpstream(t, map[string]string{
+		"/category/news/": aacgTestPage(aacgTestArchive(aacgTestBreadcrumb, aacgTestCardOne, aacgTestPageNav(aacgTestCategoryInfo, aacgTestCategoryNav))),
+	})
+	s := newAacgTestServer(t, upstream)
+
+	// 旧主机 500 → 改写主机到当前镜像 → 重试成功。
+	target := "/api/aacg/feed?" + url.Values{"url": {dead.URL + "/category/news/"}, "page": {"1"}}.Encode()
+	code, body := aacgGetJSON(t, s.handleAacgFeed, target)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", code, body)
+	}
+	aacgWantString(t, body, "title", "News")
+	aacgWantItems(t, body, 1)
+
+	// 同源失败（无改写空间）不重复请求；改写后仍失败照常 502。
+	sameHost := "/api/aacg/feed?" + url.Values{"url": {upstream.URL + "/category/gone/"}}.Encode()
+	if code, _ = aacgGetJSON(t, s.handleAacgFeed, sameHost); code != http.StatusBadGateway {
+		t.Fatalf("same-host status = %d, want 502", code)
+	}
+	retryFails := "/api/aacg/feed?" + url.Values{"url": {dead.URL + "/category/void/"}}.Encode()
+	if code, _ = aacgGetJSON(t, s.handleAacgFeed, retryFails); code != http.StatusBadGateway {
+		t.Fatalf("retry-fail status = %d, want 502", code)
+	}
+
+	deadMu.Lock()
+	hits := deadHits
+	deadMu.Unlock()
+	if hits != 2 {
+		t.Fatalf("dead host hits = %d, want 2 (one per dead-host request)", hits)
+	}
+	aacgWantPaths(t, paths(), "/category/news/", "/category/gone/", "/category/void/")
 }

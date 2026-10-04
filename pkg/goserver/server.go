@@ -77,6 +77,10 @@ type Server struct {
 	aacgTarget aacg.Target
 	aacgAt     time.Time
 
+	// aacgKnown 是最近一次成功发现（或跨重启恢复）的镜像列表，发现失败时
+	// 作为兜底候选（持久化见 aacg_targets.go）；由 aacgMu 保护。
+	aacgKnown []aacg.Target
+
 	// AACG 媒体主机动态注册表：文章响应与已放行 playlist 的内层 URI 注册，
 	// HLS 代理据此放行随机轮换的 CDN 域名（TTL 12h、容量 512，零值可用）。
 	aacgMediaMu    sync.Mutex
@@ -142,8 +146,22 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	// AACG 专栏客户端：镜像自动发现 + 解析，目标缓存见 aacg_handlers.go。
+	// 落地镜像同样位于 Cloudflare 之后，且按 TLS 指纹放行：标准库/旧指纹会被
+	// 直接重置连接（read: connection reset），浏览器指纹可正常通过，因此与 av
+	// 客户端一致注入 tls-client（chrome_150）。重定向仍由 aacg 自身策略处理。
 	// 构造失败非致命：仅该专栏返回 503，不影响其余功能。
-	aacgClient, err := aacg.New(aacg.Options{Proxy: cfg.Proxy})
+	aacgOpts := aacg.Options{Proxy: cfg.Proxy}
+	if tr, err := browser.NewTransport(browser.Options{
+		Profile: "chrome_150",
+		Proxy:   cfg.Proxy,
+		Timeout: 25 * time.Second,
+	}); err == nil {
+		aacgOpts.Proxy = ""
+		aacgOpts.Transport = tr
+	} else {
+		log.Printf("goserver: aacg browser profile init failed (%v), falling back to std transport", err)
+	}
+	aacgClient, err := aacg.New(aacgOpts)
 	if err != nil {
 		log.Printf("goserver: aacg client init failed: %v", err)
 	}
@@ -161,6 +179,7 @@ func New(cfg Config) (*Server, error) {
 		javdb:     javdbClient,
 		av:        avClient,
 		aacg:      aacgClient,
+		aacgKnown: loadAacgTargets(),
 		cfg:       cfg,
 		imgClient: imgClient,
 		username:  savedUser,

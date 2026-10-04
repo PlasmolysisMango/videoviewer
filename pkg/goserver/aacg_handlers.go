@@ -16,7 +16,8 @@ import (
 
 // AACG 专栏（镜像自动发现 + 解析后的信息流，抓取实现见 pkg/aacg）。
 // 镜像发现重且变化慢：结果懒解析后缓存 30 分钟；home/categories/search
-// 抓取失败时失效缓存，由下一次请求重新发现。
+// 抓取失败时立即失效缓存、重新发现并重试一次；feed/article/image 失败时把
+// 旧响应里的镜像域名改写到当前镜像重试一次，避免域名轮换打断前端刷新。
 
 const (
 	aacgTargetTTL = 30 * time.Minute
@@ -88,8 +89,9 @@ func (s *Server) aacgMediaHostAllowed(host string) bool {
 }
 
 // aacgUsableTarget 返回缓存中的可用镜像；缓存缺失或过期时重新发现。
-// 发现过程持锁串行，并发请求共享同一次结果；发现失败且旧目标仍可用时
-// （校验为可识别首页）续用旧目标，避免发现链路抖动直接打断前端。
+// 发现过程持锁串行，并发请求共享同一次结果；发现失败或发现结果整体不可用时，
+// 回退校验旧目标（会话内缓存 → 持久化列表，见 aacg_targets.go）续用，避免
+// 发现链路抖动/阻断直接打断前端；新发现可用时同步写回持久化列表。
 func (s *Server) aacgUsableTarget(ctx context.Context) (aacg.Target, error) {
 	s.aacgMu.Lock()
 	defer s.aacgMu.Unlock()
@@ -98,23 +100,44 @@ func (s *Server) aacgUsableTarget(ctx context.Context) (aacg.Target, error) {
 	}
 	discovery, err := s.aacg.Discover(ctx)
 	if err != nil {
-		if stale := s.aacgTarget; stale.URL != "" {
-			if health, checkErr := s.aacg.Check(ctx, stale); checkErr == nil && health.Usable {
-				s.aacgAt = time.Now()
-				return stale, nil
-			}
+		if target, ok := s.recheckKnownTargets(ctx); ok {
+			return target, nil
 		}
 		return aacg.Target{}, err
 	}
 	for _, target := range discovery.Targets {
-		health, err := s.aacg.Check(ctx, target)
-		if err == nil && health.Usable {
+		health, checkErr := s.aacg.Check(ctx, target)
+		if checkErr == nil && health.Usable {
+			s.aacgKnown = discovery.Targets
+			saveAacgTargets(discovery.Targets)
 			s.aacgTarget = target
 			s.aacgAt = time.Now()
 			return target, nil
 		}
 	}
+	if target, ok := s.recheckKnownTargets(ctx); ok {
+		return target, nil
+	}
 	return aacg.Target{}, fmt.Errorf("aacg: no usable mirror found")
+}
+
+// recheckKnownTargets 依次校验会话内缓存与持久化的旧目标，返回首个仍为可识别
+// 首页（Check 通过）的镜像并刷新目标缓存；全部不可用返回 false。去重避免同一
+// URL 重复校验。调用方须持有 aacgMu。
+func (s *Server) recheckKnownTargets(ctx context.Context) (aacg.Target, bool) {
+	checked := make(map[string]bool)
+	for _, target := range append([]aacg.Target{s.aacgTarget}, s.aacgKnown...) {
+		if target.URL == "" || checked[target.URL] {
+			continue
+		}
+		checked[target.URL] = true
+		if health, err := s.aacg.Check(ctx, target); err == nil && health.Usable {
+			s.aacgTarget = target
+			s.aacgAt = time.Now()
+			return target, true
+		}
+	}
+	return aacg.Target{}, false
 }
 
 func (s *Server) aacgInvalidateTarget() {
@@ -122,6 +145,59 @@ func (s *Server) aacgInvalidateTarget() {
 	s.aacgTarget = aacg.Target{}
 	s.aacgAt = time.Time{}
 	s.aacgMu.Unlock()
+}
+
+// aacgWithFreshTarget 以当前可用镜像执行 op；失败即失效镜像缓存并重新发现，
+// 按新镜像重试一次（镜像轮换/瞬断自愈）。重新发现失败时返回原始 op 错误
+// （此时根因是镜像而非内容），重试仍失败则失效缓存并返回重试错误。
+func aacgWithFreshTarget[T any](s *Server, ctx context.Context, op func(aacg.Target) (T, error)) (T, aacg.Target, error) {
+	target, err := s.aacgUsableTarget(ctx)
+	if err != nil {
+		var zero T
+		return zero, aacg.Target{}, err
+	}
+	result, err := op(target)
+	if err == nil {
+		return result, target, nil
+	}
+	originalErr := err
+	s.aacgInvalidateTarget()
+	fresh, freshErr := s.aacgUsableTarget(ctx)
+	if freshErr != nil {
+		var zero T
+		return zero, aacg.Target{}, originalErr
+	}
+	result, retryErr := op(fresh)
+	if retryErr != nil {
+		s.aacgInvalidateTarget()
+		var zero T
+		return zero, aacg.Target{}, retryErr
+	}
+	return result, fresh, nil
+}
+
+// aacgRebaseTargetURL 取当前可用镜像，把 raw 的 scheme+host 重写到该镜像
+// （保留 path/query），供旧响应中的镜像域名兜底重试；目标不可用、raw 无
+// 主机名或与目标本就同源（无改写空间）时返回空串。
+func (s *Server) aacgRebaseTargetURL(ctx context.Context, raw string) string {
+	target, err := s.aacgUsableTarget(ctx)
+	if err != nil {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	base, err := url.Parse(target.URL)
+	if err != nil || base.Host == "" {
+		return ""
+	}
+	if u.Host == base.Host {
+		return ""
+	}
+	u.Scheme = base.Scheme
+	u.Host = base.Host
+	return u.String()
 }
 
 // requireAacg 在 AACG 客户端不可用（构造失败）时写出 503 并返回 false。
@@ -148,14 +224,10 @@ func (s *Server) handleAacgHome(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), aacgTimeout)
 	defer cancel()
-	target, err := s.aacgUsableTarget(ctx)
+	list, target, err := aacgWithFreshTarget(s, ctx, func(t aacg.Target) (aacg.ArticleList, error) {
+		return s.aacg.Feed(ctx, t.URL, aacgPage(r))
+	})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	list, err := s.aacg.Feed(ctx, target.URL, aacgPage(r))
-	if err != nil {
-		s.aacgInvalidateTarget()
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -170,14 +242,10 @@ func (s *Server) handleAacgCategories(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), aacgTimeout)
 	defer cancel()
-	target, err := s.aacgUsableTarget(ctx)
+	categories, target, err := aacgWithFreshTarget(s, ctx, func(t aacg.Target) ([]aacg.Category, error) {
+		return s.aacg.Categories(ctx, t)
+	})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	categories, err := s.aacg.Categories(ctx, target)
-	if err != nil {
-		s.aacgInvalidateTarget()
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -191,7 +259,8 @@ func (s *Server) handleAacgCategories(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 分类流：URL 来自本服务此前返回的分类/推荐响应，直连抓取，不触镜像缓存。
+// 分类流：URL 来自本服务此前返回的分类/推荐响应，直连抓取；失败时把旧
+// 响应里的镜像域名改写到当前镜像重试一次。
 func (s *Server) handleAacgFeed(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAacg(w) {
 		return
@@ -204,6 +273,11 @@ func (s *Server) handleAacgFeed(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), aacgTimeout)
 	defer cancel()
 	list, err := s.aacg.Feed(ctx, feedURL, aacgPage(r))
+	if err != nil {
+		if retryURL := s.aacgRebaseTargetURL(ctx, feedURL); retryURL != "" {
+			list, err = s.aacg.Feed(ctx, retryURL, aacgPage(r))
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -222,14 +296,10 @@ func (s *Server) handleAacgSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), aacgTimeout)
 	defer cancel()
-	target, err := s.aacgUsableTarget(ctx)
+	list, _, err := aacgWithFreshTarget(s, ctx, func(t aacg.Target) (aacg.ArticleList, error) {
+		return s.aacg.Search(ctx, t.URL, q, aacgPage(r))
+	})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	list, err := s.aacg.Search(ctx, target.URL, q, aacgPage(r))
-	if err != nil {
-		s.aacgInvalidateTarget()
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -251,6 +321,11 @@ func (s *Server) handleAacgImage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	data, contentType, err := s.aacg.Image(ctx, imageURL)
 	if err != nil {
+		if retryURL := s.aacgRebaseTargetURL(ctx, imageURL); retryURL != "" {
+			data, contentType, err = s.aacg.Image(ctx, retryURL)
+		}
+	}
+	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -259,7 +334,8 @@ func (s *Server) handleAacgImage(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// 文章详情：URL 来自列表响应，直连抓取（视频 URL 可能含一次性 auth_key，仅返回给本机前端）。
+// 文章详情：URL 来自列表响应，直连抓取（视频 URL 可能含一次性 auth_key，仅返回给本机前端）；
+// 失败时把旧响应里的镜像域名改写到当前镜像重试一次。
 func (s *Server) handleAacgArticle(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAacg(w) {
 		return
@@ -272,6 +348,11 @@ func (s *Server) handleAacgArticle(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), aacgTimeout)
 	defer cancel()
 	detail, err := s.aacg.Article(ctx, articleURL)
+	if err != nil {
+		if retryURL := s.aacgRebaseTargetURL(ctx, articleURL); retryURL != "" {
+			detail, err = s.aacg.Article(ctx, retryURL)
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
