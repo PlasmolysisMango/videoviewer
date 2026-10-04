@@ -77,13 +77,25 @@ class AacgVideoLink {
   final String type;
   final String posterUrl;
 
-  AacgVideoLink({required this.url, this.type = '', this.posterUrl = ''});
+  /// 同一视频的候选源（首选在前，url 恒等于首项）；旧后端缺省为空。
+  final List<String> sources;
+
+  AacgVideoLink({
+    required this.url,
+    this.type = '',
+    this.posterUrl = '',
+    this.sources = const [],
+  });
 
   factory AacgVideoLink.fromJson(Map<String, dynamic> json) {
     return AacgVideoLink(
       url: json['url'] as String? ?? '',
       type: json['type'] as String? ?? '',
       posterUrl: json['poster_url'] as String? ?? '',
+      sources: (json['sources'] as List<dynamic>?)
+              ?.whereType<String>()
+              .toList() ??
+          const <String>[],
     );
   }
 }

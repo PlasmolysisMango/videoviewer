@@ -1341,18 +1341,45 @@ func (s *Server) fetchMedia(ctx context.Context, u, referer string) (*http.Respo
 	return s.imgClient.Do(req)
 }
 
+// hlsFetchFunc 取回上游媒体资源；referer 仅静态白名单链路使用（surrit 等防盗链）。
+type hlsFetchFunc func(ctx context.Context, u, referer string) (*http.Response, error)
+
+// hlsFetcher 校验媒体 URL 并选择抓取链路：静态白名单主机走通用 fetchMedia，
+// AACG 动态注册主机走 aacg 客户端网络栈（与文章/封面同链路）。校验失败时
+// 已写出错误响应并返回 ok=false。
+func (s *Server) hlsFetcher(w http.ResponseWriter, raw string) (hlsFetchFunc, bool) {
+	pu, err := url.Parse(raw)
+	if err != nil || (pu.Scheme != "http" && pu.Scheme != "https") {
+		writeError(w, http.StatusBadRequest, "invalid media url")
+		return nil, false
+	}
+	if imageHostAllowed(pu.Hostname()) {
+		return s.fetchMedia, true
+	}
+	if s.aacgMediaHostAllowed(pu.Hostname()) {
+		if s.aacg == nil {
+			writeError(w, http.StatusServiceUnavailable, "aacg client unavailable")
+			return nil, false
+		}
+		return func(ctx context.Context, u, _ string) (*http.Response, error) {
+			return s.aacg.Fetch(ctx, u)
+		}, true
+	}
+	writeError(w, http.StatusForbidden, "host not allowed")
+	return nil, false
+}
+
 // handleHlsPlaylist 转发并改写 HLS 播放列表：把其中的分片/子列表/密钥 URI
 // 重写为本代理的 URL，浏览器（hls.js）即可同源加载被 Referer 防盗链保护的流。
 func (s *Server) handleHlsPlaylist(w http.ResponseWriter, r *http.Request) {
 	u := r.URL.Query().Get("u")
 	referer := r.URL.Query().Get("ref")
-	pu, err := url.Parse(u)
-	if err != nil || (pu.Scheme != "http" && pu.Scheme != "https") || !imageHostAllowed(pu.Hostname()) {
-		writeError(w, http.StatusBadRequest, "invalid media url")
+	fetch, ok := s.hlsFetcher(w, u)
+	if !ok {
 		return
 	}
 
-	resp, err := s.fetchMedia(r.Context(), u, referer)
+	resp, err := fetch(r.Context(), u, referer)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "fetch playlist: "+err.Error())
 		return
@@ -1368,6 +1395,11 @@ func (s *Server) handleHlsPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AACG 联动：其 playlist 内的分片/密钥主机随本次响应动态注册并放行。
+	// 必须在 w.Write 之前注册，否则播放器紧随其后的首个分片请求会先到而吃到 403。
+	registerInner := !imageHostAllowed(hostOf(u))
+	var innerHosts []string
+
 	lines := strings.Split(string(body), "\n")
 	for i, raw := range lines {
 		trimmed := strings.TrimSpace(raw)
@@ -1378,12 +1410,23 @@ func (s *Server) handleHlsPlaylist(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(trimmed, "URI=\"") {
 				lines[i] = hlsURIRe.ReplaceAllStringFunc(trimmed, func(m string) string {
 					inner := m[5 : len(m)-1]
-					return `URI="` + proxyHlsURL(r, resolveAgainst(u, inner), referer) + `"`
+					absolute := resolveAgainst(u, inner)
+					if registerInner {
+						innerHosts = append(innerHosts, hostOf(absolute))
+					}
+					return `URI="` + proxyHlsURL(r, absolute, referer) + `"`
 				})
 			}
 			continue
 		}
-		lines[i] = proxyHlsURL(r, resolveAgainst(u, trimmed), referer)
+		absolute := resolveAgainst(u, trimmed)
+		if registerInner {
+			innerHosts = append(innerHosts, hostOf(absolute))
+		}
+		lines[i] = proxyHlsURL(r, absolute, referer)
+	}
+	if registerInner {
+		s.registerAacgMediaHosts(innerHosts...)
 	}
 
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
@@ -1395,13 +1438,12 @@ func (s *Server) handleHlsPlaylist(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHlsSegment(w http.ResponseWriter, r *http.Request) {
 	u := r.URL.Query().Get("u")
 	referer := r.URL.Query().Get("ref")
-	pu, err := url.Parse(u)
-	if err != nil || (pu.Scheme != "http" && pu.Scheme != "https") || !imageHostAllowed(pu.Hostname()) {
-		writeError(w, http.StatusBadRequest, "invalid media url")
+	fetch, ok := s.hlsFetcher(w, u)
+	if !ok {
 		return
 	}
 
-	resp, err := s.fetchMedia(r.Context(), u, referer)
+	resp, err := fetch(r.Context(), u, referer)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "fetch segment: "+err.Error())
 		return

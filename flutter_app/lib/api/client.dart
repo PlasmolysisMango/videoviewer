@@ -900,4 +900,13 @@ class JavDBClient {
         .replace(queryParameters: {'url': url});
     return AacgArticleDetail.fromJson(await _getJson(uri));
   }
+
+  /// 播放前动态选源：候选列表逐个交给后端验活，返回第一个可用地址
+  /// （全部不可用返回空串；多个 url 参数按 Iterable 输出重复键）。
+  Future<String> aacgProbe(List<String> urls) async {
+    final uri = Uri.parse('$baseUrl/api/aacg/probe')
+        .replace(queryParameters: {'url': urls});
+    final data = await _getJson(uri);
+    return data['url'] as String? ?? '';
+  }
 }

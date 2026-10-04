@@ -1,6 +1,7 @@
 package aacg
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -308,6 +310,71 @@ func TestTimeoutAndCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("request did not stop after cancellation")
+	}
+}
+
+func TestFetch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/media/playlist.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-VERSION:3\n")
+		case "/media/segment.ts":
+			w.Header().Set("Content-Type", "video/mp2t")
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write([]byte{0x47, 0x00, 0x01})
+		case "/media/missing.ts":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv, "")
+
+	// 非 HTML 内容与状态原样透传（不像 get 那样限定 HTML/200）。
+	resp, err := c.Fetch(context.Background(), srv.URL+"/media/playlist.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != "#EXTM3U\n#EXT-X-VERSION:3\n" {
+		t.Fatalf("playlist fetch = %q, status %d, %v", body, resp.StatusCode, err)
+	}
+
+	resp, err = c.Fetch(context.Background(), srv.URL+"/media/segment.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusPartialContent || !bytes.Equal(body, []byte{0x47, 0x00, 0x01}) {
+		t.Fatalf("segment fetch = %x, status %d, %v", body, resp.StatusCode, err)
+	}
+
+	resp, err = c.Fetch(context.Background(), srv.URL+"/media/missing.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing fetch status = %d, want 404", resp.StatusCode)
+	}
+
+	for _, raw := range []string{"file:///etc/passwd", "http://user:pass@target.invalid/", "/relative"} {
+		if _, err := c.Fetch(context.Background(), raw); err == nil {
+			t.Fatalf("unsafe URL accepted: %s", raw)
+		}
+	}
+
+	// media client 与页面链路共用重定向预算。
+	loop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer loop.Close()
+	if _, err := c.Fetch(context.Background(), loop.URL+"/loop"); err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("redirect loop not stopped: %v", err)
 	}
 }
 

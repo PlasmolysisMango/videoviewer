@@ -64,6 +64,7 @@ type Health struct {
 
 type Client struct {
 	http   *http.Client
+	media  *http.Client // no overall timeout: HLS segments stream for a while
 	entry  string
 	custom bool
 }
@@ -124,6 +125,7 @@ func New(opt Options) (*Client, error) {
 		}
 		return nil
 	}
+	c.media = &http.Client{Transport: transport, Jar: jar, CheckRedirect: c.http.CheckRedirect}
 	if err := c.validateURL(entry.String()); err != nil {
 		return nil, err
 	}
@@ -311,6 +313,29 @@ func (c *Client) get(ctx context.Context, raw, referer string, budget *int) ([]b
 		return body, resp, fmt.Errorf("aacg: expected HTML, got %q", resp.Header.Get("Content-Type"))
 	}
 	return body, resp, nil
+}
+
+// Fetch streams a media resource (HLS playlist, segment, key) over the same
+// transport, redirect policy and hop budget as page reads. Unlike get it
+// accepts any content type, imposes no size limit and has no overall timeout,
+// so the caller owns Close, any limiting and status handling.
+func (c *Client) Fetch(ctx context.Context, raw string) (*http.Response, error) {
+	if err := c.validateURL(raw); err != nil {
+		return nil, err
+	}
+	budget := maxHops
+	ctx = context.WithValue(ctx, hopKey{}, &budget)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "*/*")
+	resp, err := c.media.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("aacg fetch: %w", err)
+	}
+	return resp, nil
 }
 
 func (c *Client) Discover(ctx context.Context) (Discovery, error) {

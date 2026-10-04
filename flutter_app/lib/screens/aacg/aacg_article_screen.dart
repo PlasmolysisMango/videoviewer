@@ -41,6 +41,9 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
   bool _loading = true;
   String? _error;
 
+  /// 正在探测选源的视频下标；非空时全部播放按钮禁用（目标按钮显示转圈）。
+  int? _probingIndex;
+
   @override
   void initState() {
     super.initState();
@@ -70,17 +73,60 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
     }
   }
 
-  /// 播放复用既有播放器：原生（ExoPlayer）直连 HLS，Web 走后端代理 + hls.js。
-  /// movieId 留空：aacg 内容不写观影历史、不载字幕。
-  void _play(AacgVideoLink video) {
-    final stream = VideoStream(url: video.url, source: 'aacg');
-    final title = _detail?.article.title ?? widget.title;
-    final cover = _detail?.article.coverUrl ?? '';
-    final Widget screen = kIsWeb
-        ? HlsPlayerScreen(streams: [stream], title: title)
-        : VideoPlayerScreen(streams: [stream], title: title, cover: cover);
-    AppLogger.info('Playing aacg video (type: ${video.type})');
-    Navigator.push(context, MaterialPageRoute(builder: (context) => screen));
+  /// 播放前动态探测选源：候选逐个交给后端验活（与播放同链路），命中的源再经
+  /// 本机 HLS 代理交给播放器；全失败自动刷新文章（auth_key 短时效）重试一次，
+  /// 仍失败给出提示。旧后端无 sources 时退化为单候选。movieId 留空：aacg 内容
+  /// 不写观影历史、不载字幕。
+  Future<void> _play(int index) async {
+    final detail = _detail;
+    if (detail == null || index < 0 || index >= detail.videos.length) return;
+    setState(() => _probingIndex = index);
+    try {
+      var usable = await _client.aacgProbe(_candidates(detail.videos[index]));
+      if (usable.isEmpty) {
+        final refreshed = await _client.aacgArticle(widget.url);
+        if (!mounted) return;
+        setState(() => _detail = refreshed);
+        if (index < refreshed.videos.length) {
+          usable = await _client.aacgProbe(_candidates(refreshed.videos[index]));
+        }
+      }
+      if (!mounted) return;
+      if (usable.isEmpty) {
+        _showSnack('片源暂不可用，请稍后重试');
+        return;
+      }
+      final stream = VideoStream(url: _proxyStreamUrl(usable), source: 'aacg');
+      final title = _detail?.article.title ?? widget.title;
+      final cover = _detail?.article.coverUrl ?? '';
+      final Widget screen = kIsWeb
+          ? HlsPlayerScreen(streams: [stream], title: title)
+          : VideoPlayerScreen(streams: [stream], title: title, cover: cover);
+      AppLogger.info('Playing aacg video (type: ${detail.videos[index].type})');
+      Navigator.push(context, MaterialPageRoute(builder: (context) => screen));
+    } catch (e) {
+      AppLogger.error('Failed to prepare aacg video', e);
+      if (!mounted) return;
+      _showSnack('播放准备失败，请检查服务是否运行');
+    } finally {
+      if (mounted) setState(() => _probingIndex = null);
+    }
+  }
+
+  List<String> _candidates(AacgVideoLink video) =>
+      video.sources.isNotEmpty ? video.sources : <String>[video.url];
+
+  /// 原生播放器统一经本机 HLS 代理取流（站点 CDN 域名对手机侧直连不可达，
+  /// 后端链路才对它们可用）；Web 端 HlsPlayerScreen 自带代理包装，无需处理。
+  String _proxyStreamUrl(String url) {
+    if (kIsWeb) return url;
+    final query = Uri(queryParameters: {'u': url}).query;
+    return '${BackendLauncher.baseUrl}/api/hls/playlist?$query';
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -147,8 +193,14 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
             child: Align(
               alignment: Alignment.centerLeft,
               child: FilledButton.icon(
-                onPressed: () => _play(detail.videos[i]),
-                icon: const Icon(Icons.play_arrow),
+                onPressed: _probingIndex != null ? null : () => _play(i),
+                icon: _probingIndex == i
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.play_arrow),
                 label: Text(detail.videos.length == 1
                     ? '播放视频'
                     : '播放视频 ${i + 1}'),

@@ -76,6 +76,11 @@ type Server struct {
 	aacgMu     sync.Mutex
 	aacgTarget aacg.Target
 	aacgAt     time.Time
+
+	// AACG 媒体主机动态注册表：文章响应与已放行 playlist 的内层 URI 注册，
+	// HLS 代理据此放行随机轮换的 CDN 域名（TTL 12h、容量 512，零值可用）。
+	aacgMediaMu    sync.Mutex
+	aacgMediaHosts map[string]time.Time
 }
 
 // New creates a new Server with the given configuration.
@@ -245,6 +250,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/aacg/search", s.handleAacgSearch)
 	mux.HandleFunc("GET /api/aacg/article", s.handleAacgArticle)
 	mux.HandleFunc("GET /api/aacg/image", s.handleAacgImage)
+	mux.HandleFunc("GET /api/aacg/probe", s.handleAacgProbe)
 
 	// Apply CORS middleware
 	handler := cors(mux)

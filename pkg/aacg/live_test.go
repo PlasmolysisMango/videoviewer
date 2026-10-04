@@ -260,7 +260,16 @@ func TestLiveArticle(t *testing.T) {
 			if err == nil {
 				host = parsed.Host
 			}
-			t.Logf("video type=%q host=%s", video.Type, host)
+			t.Logf("video type=%q host=%s sources=%d", video.Type, host, len(video.Sources))
+			// 软断言：首选恒等于 URL、候选均可解析为绝对 http(s)（不拉媒体、不记 URL）。
+			if len(video.Sources) == 0 || video.Sources[0] != video.URL {
+				t.Errorf("article %s video source list malformed: sources=%d", item.URL, len(video.Sources))
+			}
+			for _, candidate := range video.Sources {
+				if u, err := parseURL(candidate); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+					t.Errorf("article %s video candidate unparsable: %v", item.URL, err)
+				}
+			}
 		}
 		if links, imageHosts, err := liveContentParts(detail); err != nil {
 			t.Errorf("article %s content parts: %v", item.URL, err)

@@ -73,10 +73,14 @@ type ArticleLink struct {
 	URL   string
 }
 
+// VideoLink is one playable slot. Sources lists its candidate URLs in
+// preference order (URL is always Sources[0]); the site publishes one encoding
+// per slot, so extra entries are recovery alternatives for the same video.
 type VideoLink struct {
 	URL       string
 	Type      string
 	PosterURL string
+	Sources   []string
 }
 
 // ParseHome accepts synthetic data-role markup; it never requests a website or its resources.

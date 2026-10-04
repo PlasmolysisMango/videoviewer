@@ -408,22 +408,36 @@ func articleVideos(article *goquery.Selection, base *url.URL) ([]VideoLink, erro
 			return false
 		}
 		// video 与 video_h265 是同一视频的两种编码，浏览器按能力择一播放；
-		// 这里优先 H.264 主源，仅在缺失时回退 H.265，避免重复播放按钮。
-		sources := config.VideoH265
+		// 每个 player 汇总为一条 VideoLink（避免重复播放按钮），候选按
+		// 「H.264 主源在前、H.265 备选在后」保序去重放在 Sources 里，
+		// 播放端可逐个探测回退；跨 player 仍按首选地址去重。
+		order := config.VideoH265
 		if config.Video != nil {
-			sources = []dplayerSource{*config.Video}
+			order = append([]dplayerSource{*config.Video}, config.VideoH265...)
 		}
-		for _, source := range sources {
+		candidates := make([]string, 0, len(order))
+		primaryType := ""
+		seenHere := make(map[string]bool, len(order))
+		for _, source := range order {
 			address, err := contentURL(base, source.URL)
 			if err != nil {
 				parseErr = fmt.Errorf("aacg article: invalid video link: %w", err)
 				return false
 			}
-			if !seen[address] {
-				videos = append(videos, VideoLink{URL: address, Type: strings.TrimSpace(source.Type)})
-				seen[address] = true
+			if seenHere[address] {
+				continue
 			}
+			seenHere[address] = true
+			if len(candidates) == 0 {
+				primaryType = strings.TrimSpace(source.Type)
+			}
+			candidates = append(candidates, address)
 		}
+		if len(candidates) == 0 || seen[candidates[0]] {
+			return true
+		}
+		seen[candidates[0]] = true
+		videos = append(videos, VideoLink{URL: candidates[0], Type: primaryType, Sources: candidates})
 		return true
 	})
 	if parseErr != nil {

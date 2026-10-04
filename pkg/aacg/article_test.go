@@ -97,7 +97,7 @@ func TestArticle(t *testing.T) {
 			},
 			Content:      "First paragraph.\n\nSecond paragraph.\n\none\ntwo\n\n关键词: #fixture #sample",
 			ContentParts: []ContentPart{},
-			Videos:       []VideoLink{{URL: "https://cdn.example.invalid/main.m3u8?token=1", Type: "hls"}},
+			Videos:       []VideoLink{{URL: "https://cdn.example.invalid/main.m3u8?token=1", Type: "hls", Sources: []string{"https://cdn.example.invalid/main.m3u8?token=1"}}},
 			Previous:     &ArticleLink{Title: "Earlier post title", URL: srv.URL + "/archives/20/"},
 			Next:         &ArticleLink{Title: "Later entry", URL: srv.URL + "/archives/21/"},
 		}
@@ -220,7 +220,7 @@ func TestArticle(t *testing.T) {
 		))
 		srv, _ := articleTestServe(t, page)
 		got, err := newTestClient(t, srv, "").Article(context.Background(), srv.URL+"/archives/1/")
-		want := []VideoLink{{URL: "https://cdn.example.invalid/fallback.m3u8", Type: "hls"}}
+		want := []VideoLink{{URL: "https://cdn.example.invalid/fallback.m3u8", Type: "hls", Sources: []string{"https://cdn.example.invalid/fallback.m3u8"}}}
 		if err != nil || !reflect.DeepEqual(got.Videos, want) || got.Content != "Text." {
 			t.Fatalf("h265 fallback = %+v, %v; want videos %+v", got, err, want)
 		}
@@ -236,9 +236,39 @@ func TestArticle(t *testing.T) {
 		))
 		srv, _ := articleTestServe(t, page)
 		got, err := newTestClient(t, srv, "").Article(context.Background(), srv.URL+"/archives/1/")
-		want := []VideoLink{{URL: "https://cdn.example.invalid/main.m3u8", Type: "hls"}}
+		want := []VideoLink{{URL: "https://cdn.example.invalid/main.m3u8", Type: "hls", Sources: []string{"https://cdn.example.invalid/main.m3u8", "https://cdn.example.invalid/backup.m3u8"}}}
 		if err != nil || !reflect.DeepEqual(got.Videos, want) {
 			t.Fatalf("dedupe sources = %+v, %v; want %+v", got.Videos, err, want)
+		}
+	})
+	t.Run("h265 candidates keep order", func(t *testing.T) {
+		page := articleTestPage(articleTestArticle(
+			articleTestHeadline,
+			articleTestBody(
+				articleTestPlayer(`{"video":null,"video_h265":[{"url":"https://cdn.example.invalid/first.m3u8","type":"hls"},{"url":"https://cdn.example.invalid/second.m3u8","type":"hls"},{"url":"https://cdn.example.invalid/first.m3u8","type":"hls"}]}`),
+				`<p>Text.</p>`,
+			),
+		))
+		srv, _ := articleTestServe(t, page)
+		got, err := newTestClient(t, srv, "").Article(context.Background(), srv.URL+"/archives/1/")
+		want := []VideoLink{{URL: "https://cdn.example.invalid/first.m3u8", Type: "hls", Sources: []string{"https://cdn.example.invalid/first.m3u8", "https://cdn.example.invalid/second.m3u8"}}}
+		if err != nil || !reflect.DeepEqual(got.Videos, want) {
+			t.Fatalf("h265 candidates = %+v, %v; want %+v", got.Videos, err, want)
+		}
+	})
+	t.Run("same url video and h265 dedupe", func(t *testing.T) {
+		page := articleTestPage(articleTestArticle(
+			articleTestHeadline,
+			articleTestBody(
+				articleTestPlayer(`{"video":{"url":"https://cdn.example.invalid/same.m3u8","type":"hls"},"video_h265":{"url":"https://cdn.example.invalid/same.m3u8","type":"hls"}}`),
+				`<p>Text.</p>`,
+			),
+		))
+		srv, _ := articleTestServe(t, page)
+		got, err := newTestClient(t, srv, "").Article(context.Background(), srv.URL+"/archives/1/")
+		want := []VideoLink{{URL: "https://cdn.example.invalid/same.m3u8", Type: "hls", Sources: []string{"https://cdn.example.invalid/same.m3u8"}}}
+		if err != nil || !reflect.DeepEqual(got.Videos, want) {
+			t.Fatalf("same url dedupe = %+v, %v; want %+v", got.Videos, err, want)
 		}
 	})
 	t.Run("relative cover and no player", func(t *testing.T) {

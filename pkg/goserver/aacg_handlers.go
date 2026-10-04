@@ -1,10 +1,14 @@
 package goserver
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"videoviewer/pkg/aacg"
@@ -17,7 +21,71 @@ import (
 const (
 	aacgTargetTTL = 30 * time.Minute
 	aacgTimeout   = 45 * time.Second
+
+	// AACG 站点视频走随机轮换的 CDN 域名（主列表/分片/密钥各自不同），无法静态
+	// 白名单；注册来源仅有文章详情响应与已放行 playlist 的内层 URI 两条，TTL 与
+	// 容量有界，HLS 代理据此放行（见 handlers.go 的 hlsFetcher）。
+	aacgMediaTTL     = 12 * time.Hour
+	aacgMediaMaxSize = 512
 )
+
+// hostOf 返回绝对 URL 的主机名（无端口）；解析失败返回空串。
+func hostOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// registerAacgMediaHosts 注册（或刷新）AACG 媒体主机，供 HLS 代理放行。
+// 超容量时先清过期项、仍超则丢最旧；零值 Server 可直接使用。
+func (s *Server) registerAacgMediaHosts(hosts ...string) {
+	now := time.Now()
+	s.aacgMediaMu.Lock()
+	defer s.aacgMediaMu.Unlock()
+	if s.aacgMediaHosts == nil {
+		s.aacgMediaHosts = make(map[string]time.Time)
+	}
+	for _, host := range hosts {
+		if host = strings.ToLower(strings.TrimSpace(host)); host != "" {
+			s.aacgMediaHosts[host] = now
+		}
+	}
+	if len(s.aacgMediaHosts) <= aacgMediaMaxSize {
+		return
+	}
+	for host, at := range s.aacgMediaHosts {
+		if now.Sub(at) >= aacgMediaTTL {
+			delete(s.aacgMediaHosts, host)
+		}
+	}
+	for len(s.aacgMediaHosts) > aacgMediaMaxSize {
+		oldestHost := ""
+		var oldest time.Time
+		for host, at := range s.aacgMediaHosts {
+			if oldestHost == "" || at.Before(oldest) {
+				oldestHost, oldest = host, at
+			}
+		}
+		delete(s.aacgMediaHosts, oldestHost)
+	}
+}
+
+func (s *Server) aacgMediaHostAllowed(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	s.aacgMediaMu.Lock()
+	defer s.aacgMediaMu.Unlock()
+	at, ok := s.aacgMediaHosts[host]
+	if !ok {
+		return false
+	}
+	if time.Since(at) >= aacgMediaTTL {
+		delete(s.aacgMediaHosts, host)
+		return false
+	}
+	return true
+}
 
 // aacgUsableTarget 返回缓存中的可用镜像；缓存缺失或过期时重新发现。
 // 发现过程持锁串行，并发请求共享同一次结果。
@@ -201,7 +269,70 @@ func (s *Server) handleAacgArticle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	// 先注册再响应：前端随后对 probe/播放的请求即可放行这些 CDN 主机。
+	s.registerAacgMediaHosts(aacgVideoHosts(detail)...)
 	writeJSON(w, http.StatusOK, aacgArticleJSON(detail))
+}
+
+// aacgVideoHosts 收集文章每条视频（首选 + 候选）的主机，供 HLS 代理放行。
+func aacgVideoHosts(detail aacg.ArticleDetail) []string {
+	hosts := []string{}
+	for _, video := range detail.Videos {
+		hosts = append(hosts, hostOf(video.URL))
+		for _, source := range video.Sources {
+			hosts = append(hosts, hostOf(source))
+		}
+	}
+	return hosts
+}
+
+// aacgProbeTimeout 是单个候选播放列表的探测上限（探测对象是短小主列表）。
+const aacgProbeTimeout = 8 * time.Second
+
+// handleAacgProbe 播放前的动态选源：按顺序逐个探测候选播放列表，返回第一个
+// 可用地址（判定与播放完全同栈：主机已注册 + HTTP 200 + 正文以 #EXTM3U 开头）；
+// 全部失败返回空串（恒 200）。只回判定结果，不代理内容，也不打印含 auth_key 的 URL。
+func (s *Server) handleAacgProbe(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAacg(w) {
+		return
+	}
+	candidates := r.URL.Query()["url"]
+	if len(candidates) == 0 || len(candidates) > 4 {
+		writeError(w, http.StatusBadRequest, "1-4 url parameters required")
+		return
+	}
+	usable := ""
+	for _, raw := range candidates {
+		if s.aacgProbeSource(r.Context(), raw) {
+			usable = raw
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": usable})
+}
+
+func (s *Server) aacgProbeSource(ctx context.Context, raw string) bool {
+	pu, err := url.Parse(raw)
+	if err != nil || (pu.Scheme != "http" && pu.Scheme != "https") || !s.aacgMediaHostAllowed(pu.Hostname()) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, aacgProbeTimeout)
+	defer cancel()
+	resp, err := s.aacg.Fetch(ctx, raw)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	head, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if err != nil {
+		return false
+	}
+	usable := bytes.HasPrefix(head, []byte("#EXTM3U"))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<20))
+	return usable
 }
 
 func aacgItemJSON(item aacg.ArticleSummary) map[string]any {
@@ -240,10 +371,15 @@ func aacgArticleJSON(detail aacg.ArticleDetail) map[string]any {
 	}
 	videos := make([]map[string]any, 0, len(detail.Videos))
 	for _, v := range detail.Videos {
+		sources := v.Sources
+		if sources == nil {
+			sources = []string{}
+		}
 		videos = append(videos, map[string]any{
 			"url":        v.URL,
 			"type":       v.Type,
 			"poster_url": v.PosterURL,
+			"sources":    sources,
 		})
 	}
 	payload := aacgItemJSON(detail.ArticleSummary)

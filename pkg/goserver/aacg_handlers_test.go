@@ -45,7 +45,7 @@ const (
 	aacgTestArticleHeadline = `<h1 class="post-title" itemprop="name headline">Fixture headline</h1>`
 	aacgTestArticleDate     = `<meta itemprop="datePublished" content="2026-01-02T03:04:05+07:00" />`
 	aacgTestArticleCover    = `<meta itemprop="image" content="https://img.example.invalid/cover.jpeg" />`
-	aacgTestPlayerConfig    = `{"video":{"url":"https://cdn.example.invalid/main.m3u8","type":"hls"},"video_h265":[]}`
+	aacgTestPlayerConfig    = `{"video":{"url":"https://cdn.example.invalid/main.m3u8","type":"hls"},"video_h265":{"url":"https://cdn2.example.invalid/backup.m3u8","type":"hls"}}`
 )
 
 func aacgTestIndex(parts ...string) string {
@@ -352,6 +352,22 @@ func TestAacgArticleHandler(t *testing.T) {
 	video, _ := videos[0].(map[string]any)
 	aacgWantString(t, video, "url", "https://cdn.example.invalid/main.m3u8")
 	aacgWantString(t, video, "type", "hls")
+	sources, ok := video["sources"].([]any)
+	if !ok || len(sources) != 2 ||
+		sources[0] != "https://cdn.example.invalid/main.m3u8" ||
+		sources[1] != "https://cdn2.example.invalid/backup.m3u8" {
+		t.Fatalf("sources = %v, want [main backup]", video["sources"])
+	}
+	// 文章响应同时把媒体主机注册进 HLS 代理白名单（probe/播放的前置条件）。
+	if !s.aacgMediaHostAllowed("cdn.example.invalid") || !s.aacgMediaHostAllowed("cdn2.example.invalid") {
+		t.Fatalf("article media hosts not registered: %v", s.aacgMediaHosts)
+	}
+	s.aacgMediaMu.Lock()
+	registered := len(s.aacgMediaHosts)
+	s.aacgMediaMu.Unlock()
+	if registered != 2 {
+		t.Fatalf("registered media hosts = %d, want 2", registered)
+	}
 	aacgWantPaths(t, paths(), "/archives/11/")
 
 	// 缺少 url → 400
@@ -370,6 +386,178 @@ func TestAacgArticleHandler(t *testing.T) {
 		t.Fatalf("prev/next = %v/%v, want null/null", body["prev"], body["next"])
 	}
 	aacgWantPaths(t, paths(), "/archives/11/", "/archives/12/")
+}
+
+// aacgTestVideoArticlePage 生成视频地址指向定制上游的文章页（HLS 代理测试用）。
+func aacgTestVideoArticlePage(videoURL string) string {
+	return aacgTestPage(`<div id="post" role="main"><article itemscope itemtype="https://schema.org/BlogPosting">` +
+		aacgTestArticleHeadline +
+		`<div class="post-content" itemprop="articleBody"><p>Fixture paragraph.</p>` +
+		`<div class="dplayer" data-config='{"video":{"url":"` + videoURL + `","type":"hls"},"video_h265":[]}'></div>` +
+		`</div></article></div>`)
+}
+
+// aacgTestProxyURL 解析改写后的代理 URL，须指向 httptest 请求的默认 Host。
+func aacgTestProxyURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host != "example.com" || !strings.HasPrefix(u.Path, "/api/hls/") {
+		t.Fatalf("proxy URL %q, %v", raw, err)
+	}
+	return u
+}
+
+// aacgTestProxyURI 从 #EXT-X-KEY / #EXT-X-MAP 行中取出改写后的 URI 并解析。
+func aacgTestProxyURI(t *testing.T, line string) *url.URL {
+	t.Helper()
+	start := strings.Index(line, `URI="`)
+	if start < 0 {
+		t.Fatalf("no URI in %q", line)
+	}
+	rest := line[start+5:]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		t.Fatalf("unterminated URI in %q", line)
+	}
+	return aacgTestProxyURL(t, rest[:end])
+}
+
+// HLS 代理的 AACG 通路：文章注册的主机经 aacg 网络栈取流并改写内层 URI；
+// 内层主机随 playlist 注册放行；白名单外的未注册主机保持 403。
+func TestAacgHlsProxy(t *testing.T) {
+	const (
+		playlistBody = "#EXTM3U\n" +
+			"#EXT-X-VERSION:3\n" +
+			"#EXT-X-TARGETDURATION:10\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n" +
+			"#EXT-X-MAP:URI=\"https://inner.example.invalid/init.mp4\"\n" +
+			"#EXTINF:10.0,\n" +
+			"seg1.ts\n" +
+			"#EXTINF:10.0,\n" +
+			"seg2.ts\n" +
+			"#EXT-X-ENDLIST\n"
+		segmentBody = "\x47fixture-ts-payload"
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/archives/11/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, aacgTestVideoArticlePage("http://"+r.Host+"/media/main.m3u8"))
+		case "/media/main.m3u8":
+			fmt.Fprint(w, playlistBody)
+		case "/media/seg1.ts":
+			w.Header().Set("Content-Type", "video/mp2t")
+			fmt.Fprint(w, segmentBody)
+		default:
+			t.Errorf("unexpected upstream request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	s := newAacgTestServer(t, upstream)
+
+	// 文章响应后媒体主机已注册（app 随后 probe/播放的前置条件）。
+	code, body := aacgGetJSON(t, s.handleAacgArticle, "/api/aacg/article?"+url.Values{"url": {upstream.URL + "/archives/11/"}}.Encode())
+	if code != http.StatusOK {
+		t.Fatalf("article status = %d, body = %v", code, body)
+	}
+	if !s.aacgMediaHostAllowed("127.0.0.1") {
+		t.Fatalf("article media host not registered")
+	}
+	if s.aacgMediaHostAllowed("inner.example.invalid") {
+		t.Fatalf("playlist-inner host registered too early")
+	}
+
+	// playlist：经 aacg.Fetch 拉取 → 相对/内层 URI 改写为本代理 + 内层主机注册。
+	rec := httptest.NewRecorder()
+	s.handleHlsPlaylist(rec, httptest.NewRequest(http.MethodGet, "/api/hls/playlist?"+url.Values{"u": {upstream.URL + "/media/main.m3u8"}}.Encode(), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("playlist status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/vnd.apple.mpegurl" {
+		t.Fatalf("playlist Content-Type = %q", ct)
+	}
+	lines := strings.Split(rec.Body.String(), "\n")
+	if len(lines) != 11 || lines[0] != "#EXTM3U" || lines[5] != "#EXTINF:10.0," || lines[9] != "#EXT-X-ENDLIST" {
+		t.Fatalf("playlist body = %q", rec.Body.String())
+	}
+	if !s.aacgMediaHostAllowed("inner.example.invalid") {
+		t.Fatalf("playlist-inner host not registered before response")
+	}
+	seg := aacgTestProxyURL(t, lines[6])
+	if seg.Path != "/api/hls/segment" || seg.Query().Get("u") != upstream.URL+"/media/seg1.ts" {
+		t.Fatalf("segment line rewritten to %q", lines[6])
+	}
+	key := aacgTestProxyURI(t, lines[3])
+	if key.Path != "/api/hls/segment" || key.Query().Get("u") != upstream.URL+"/media/key.bin" {
+		t.Fatalf("key URI rewritten to %q", lines[3])
+	}
+	init := aacgTestProxyURI(t, lines[4])
+	if init.Path != "/api/hls/segment" || init.Query().Get("u") != "https://inner.example.invalid/init.mp4" {
+		t.Fatalf("init URI rewritten to %q", lines[4])
+	}
+
+	// 改写出的分片 URL 直接可用：原文回传（内层主机已随 playlist 放行）。
+	rec = httptest.NewRecorder()
+	s.handleHlsSegment(rec, httptest.NewRequest(http.MethodGet, seg.String(), nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != segmentBody {
+		t.Fatalf("segment status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "video/mp2t" {
+		t.Fatalf("segment Content-Type = %q", ct)
+	}
+
+	// 未注册主机仍是 403；非法 scheme 仍是 400。
+	rec = httptest.NewRecorder()
+	s.handleHlsPlaylist(rec, httptest.NewRequest(http.MethodGet, "/api/hls/playlist?"+url.Values{"u": {"https://unregistered.example.invalid/x.m3u8"}}.Encode(), nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unregistered host status = %d, want 403", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	s.handleHlsSegment(rec, httptest.NewRequest(http.MethodGet, "/api/hls/segment?"+url.Values{"u": {"file:///etc/passwd"}}.Encode(), nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe scheme status = %d, want 400", rec.Code)
+	}
+}
+
+// probe：播放前动态选源的判定链（注册主机 + 200 + #EXTM3U），只回判定结果。
+func TestAacgProbeHandler(t *testing.T) {
+	upstream, paths := aacgTestUpstream(t, map[string]string{
+		"/good.m3u8":  "#EXTM3U\n#EXT-X-ENDLIST\n",
+		"/plain.html": "<html>not a playlist</html>",
+	})
+	s := newAacgTestServer(t, upstream)
+	s.registerAacgMediaHosts("127.0.0.1")
+	good := upstream.URL + "/good.m3u8"
+	missing := upstream.URL + "/missing.m3u8"
+	plain := upstream.URL + "/plain.html"
+
+	// 首个 404、次个 200+#EXTM3U → 返回次者（恒 200；顺序即候选优先级）。
+	target := "/api/aacg/probe?" + url.Values{"url": {missing, good}}.Encode()
+	code, body := aacgGetJSON(t, s.handleAacgProbe, target)
+	if code != http.StatusOK {
+		t.Fatalf("probe status = %d, body = %v", code, body)
+	}
+	aacgWantString(t, body, "url", good)
+	aacgWantPaths(t, paths(), "/missing.m3u8", "/good.m3u8")
+
+	// 非播放列表正文 / 未注册主机 / 非法 URL → 空串（候选不发出请求）。
+	target = "/api/aacg/probe?" + url.Values{"url": {plain, "https://unregistered.example.invalid/x.m3u8", "file:///etc/passwd"}}.Encode()
+	code, body = aacgGetJSON(t, s.handleAacgProbe, target)
+	if code != http.StatusOK {
+		t.Fatalf("probe status = %d, body = %v", code, body)
+	}
+	aacgWantString(t, body, "url", "")
+	aacgWantPaths(t, paths(), "/missing.m3u8", "/good.m3u8", "/plain.html")
+
+	// 参数个数校验：0 个或超过 4 个 → 400。
+	if code, _ = aacgGetJSON(t, s.handleAacgProbe, "/api/aacg/probe"); code != http.StatusBadRequest {
+		t.Fatalf("no-url status = %d, want 400", code)
+	}
+	many := "/api/aacg/probe?" + url.Values{"url": {good, good, good, good, good}}.Encode()
+	if code, _ = aacgGetJSON(t, s.handleAacgProbe, many); code != http.StatusBadRequest {
+		t.Fatalf("too-many status = %d, want 400", code)
+	}
 }
 
 // aacgTestEncryptImage 复刻站点图片混淆（AES-128-CBC + PKCS7），供代理解密测试用。
@@ -458,6 +646,7 @@ func TestAacgClientUnavailable(t *testing.T) {
 		"search":     s.handleAacgSearch,
 		"article":    s.handleAacgArticle,
 		"image":      s.handleAacgImage,
+		"probe":      s.handleAacgProbe,
 	} {
 		code, _ := aacgGetJSON(t, h, "/api/aacg/"+name)
 		if code != http.StatusServiceUnavailable {
