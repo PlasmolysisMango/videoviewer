@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../api/aacg_models.dart';
 import '../../api/client.dart';
 import '../../services/backend_launcher.dart';
+import '../../services/data_cache.dart';
+import '../../services/logger.dart';
 import '../../widgets/common_ui.dart';
 import 'aacg_category_feed_screen.dart';
 import 'aacg_feed_list.dart';
@@ -90,7 +94,10 @@ class _HomeTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AacgFeedList(load: (page) => client.aacgHome(page: page));
+    return AacgFeedList(
+      cacheKey: 'aacg.home.v1',
+      load: (page) => client.aacgHome(page: page),
+    );
   }
 }
 
@@ -105,6 +112,9 @@ class _CategoriesTab extends StatefulWidget {
 }
 
 class _CategoriesTabState extends State<_CategoriesTab> {
+  static const _cacheKey = 'aacg.categories.v1';
+  static const _cacheMaxAge = Duration(hours: 24);
+
   List<AacgCategory> _categories = const [];
   bool _loading = true;
   String? _error;
@@ -112,23 +122,65 @@ class _CategoriesTabState extends State<_CategoriesTab> {
   @override
   void initState() {
     super.initState();
-    _load();
+    // 有缓存：只展示缓存，进入不重新拉取（下拉刷新才刷新）；
+    // 无缓存/缓存过期：正常加载。
+    _restoreCache();
+  }
+
+  /// 恢复上次成功拉取的分类表；命中即展示，未命中转正常加载。
+  Future<void> _restoreCache() async {
+    List<AacgCategory> categories = const [];
+    try {
+      final data =
+          await DataCache.instance.read(_cacheKey, maxAge: _cacheMaxAge);
+      if (data is Map) {
+        final raw = data.cast<String, dynamic>()['categories'];
+        if (raw is List) {
+          categories = [
+            for (final e in raw)
+              AacgCategory.fromJson((e as Map).cast<String, dynamic>()),
+          ];
+        }
+      }
+    } catch (e) {
+      AppLogger.warning('Restore aacg categories cache failed: $e');
+    }
+    if (!mounted) return;
+    if (categories.isEmpty) {
+      _load();
+      return;
+    }
+    setState(() {
+      _categories = categories;
+      _loading = false;
+    });
   }
 
   Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    // 已有内容时（下拉刷新）不闪加载态，失败静默保留旧列表。
+    if (_categories.isEmpty) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final categories = await widget.client.aacgCategories();
       if (!mounted) return;
+      unawaited(DataCache.instance.write(_cacheKey, {
+        'categories': [for (final c in categories) c.toJson()],
+      }));
       setState(() {
         _categories = categories;
         _loading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
+      if (_categories.isNotEmpty) {
+        AppLogger.warning('Refresh aacg categories failed: $e');
+        return;
+      }
       setState(() {
         _error = e.toString();
         _loading = false;

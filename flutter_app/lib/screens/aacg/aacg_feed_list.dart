@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/aacg_models.dart';
+import '../../services/data_cache.dart';
 import '../../services/image_url.dart';
 import '../../services/logger.dart';
 import '../../widgets/common_ui.dart';
@@ -16,10 +19,15 @@ class AacgFeedList extends StatefulWidget {
   /// 空结果时的提示文案。
   final String emptyText;
 
+  /// 持久缓存 key（仅第 1 页快照）；null = 不缓存（搜索等一次性场景）。
+  /// 命中缓存时进入直接展示、不发网络，仅下拉刷新重新拉取。
+  final String? cacheKey;
+
   const AacgFeedList({
     super.key,
     required this.load,
     this.emptyText = '暂无内容',
+    this.cacheKey,
   });
 
   @override
@@ -37,10 +45,57 @@ class _AacgFeedListState extends State<AacgFeedList> {
   /// 请求代际：刷新时递增，旧响应返回后直接丢弃。
   int _loadSeq = 0;
 
+  static const _cacheMaxAge = Duration(hours: 6);
+
   @override
   void initState() {
     super.initState();
-    _reload();
+    // 有缓存：只展示缓存，进入不重新拉取（下拉刷新才刷新）；
+    // 无缓存/缓存过期：正常加载。
+    if (widget.cacheKey == null) {
+      _reload();
+      return;
+    }
+    _restoreCache().then((hit) {
+      if (!hit && mounted) _reload();
+    });
+  }
+
+  /// 恢复上次成功拉取的第 1 页快照；返回是否命中。
+  Future<bool> _restoreCache() async {
+    try {
+      final data =
+          await DataCache.instance.read(widget.cacheKey!, maxAge: _cacheMaxAge);
+      if (data is! Map || !mounted) return false;
+      final box = data.cast<String, dynamic>();
+      final items = (box['items'] as List<dynamic>?)
+              ?.map((e) =>
+                  AacgArticle.fromJson((e as Map).cast<String, dynamic>()))
+              .toList() ??
+          const <AacgArticle>[];
+      if (items.isEmpty) return false;
+      setState(() {
+        _items = items;
+        _page = box['page'] as int? ?? 1;
+        _hasNext = box['hasNext'] as bool? ?? false;
+        _loading = false;
+      });
+      return true;
+    } catch (e) {
+      AppLogger.warning('Restore aacg feed cache failed: $e');
+      return false;
+    }
+  }
+
+  /// 回写第 1 页快照（缓存只承载首屏，续页不入缓存）。
+  void _saveCache() {
+    final key = widget.cacheKey;
+    if (key == null) return;
+    unawaited(DataCache.instance.write(key, {
+      'items': [for (final item in _items) item.toJson()],
+      'page': _page,
+      'hasNext': _hasNext,
+    }));
   }
 
   /// 首屏/下拉刷新：整表替换；列表已有内容时不闪加载态，
@@ -61,6 +116,7 @@ class _AacgFeedListState extends State<AacgFeedList> {
         _hasNext = result.hasNext;
         _loading = false;
       });
+      _saveCache();
       AppLogger.info('Loaded aacg feed page $_page (${_items.length} items)');
     } catch (e) {
       if (!mounted || seq != _loadSeq) return;

@@ -23,6 +23,16 @@ class AacgArticle {
       publishedAt: json['published_at'] as String? ?? '',
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'title': title,
+      'url': url,
+      'summary': summary,
+      'cover_url': coverUrl,
+      'published_at': publishedAt,
+    };
+  }
 }
 
 /// 一页信息流（推荐/分类/搜索共用）。
@@ -70,6 +80,10 @@ class AacgCategory {
       url: json['url'] as String? ?? '',
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {'name': name, 'url': url};
+  }
 }
 
 class AacgVideoLink {
@@ -98,6 +112,15 @@ class AacgVideoLink {
           const <String>[],
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'url': url,
+      'type': type,
+      'poster_url': posterUrl,
+      'sources': sources,
+    };
+  }
 }
 
 /// 正文切段：链接段 url 非空（与其他文章的绝对地址），图片段 imageUrl 非空
@@ -115,6 +138,10 @@ class AacgContentPart {
       url: json['url'] as String? ?? '',
       imageUrl: json['image_url'] as String? ?? '',
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {'text': text, 'url': url, 'image_url': imageUrl};
   }
 }
 
@@ -156,5 +183,16 @@ class AacgArticleDetail {
           : null,
       next: next is Map<String, dynamic> ? AacgArticle.fromJson(next) : null,
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      ...article.toJson(),
+      'content': content,
+      'content_parts': [for (final p in contentParts) p.toJson()],
+      'videos': [for (final v in videos) v.toJson()],
+      'prev': previous?.toJson(),
+      'next': next?.toJson(),
+    };
   }
 }

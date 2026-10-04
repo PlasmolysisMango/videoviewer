@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
@@ -7,6 +9,7 @@ import '../../api/aacg_models.dart';
 import '../../api/client.dart';
 import '../../api/models.dart';
 import '../../services/backend_launcher.dart';
+import '../../services/data_cache.dart';
 import '../../services/image_url.dart';
 import '../../services/logger.dart';
 import '../../widgets/common_ui.dart';
@@ -44,27 +47,71 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
   /// 正在探测选源的视频下标；非空时全部播放按钮禁用（目标按钮显示转圈）。
   int? _probingIndex;
 
+  static const _cacheMaxAge = Duration(hours: 6);
+
+  /// key 取路径而非完整 URL：镜像域名可能轮换，路径才是稳定标识。
+  String get _cacheKey =>
+      'aacg.article.v1.${Uri.tryParse(widget.url)?.path ?? widget.url}';
+
   @override
   void initState() {
     super.initState();
     _client = JavDBClient(BackendLauncher.baseUrl);
-    _load();
+    // 有缓存：只展示缓存，进入不重新拉取（下拉刷新才刷新）；
+    // 无缓存/缓存过期：正常加载。
+    _restoreCache().then((hit) {
+      if (!hit && mounted) _load();
+    });
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  /// 恢复上次成功拉取的详情快照；返回是否命中。
+  Future<bool> _restoreCache() async {
+    try {
+      final data =
+          await DataCache.instance.read(_cacheKey, maxAge: _cacheMaxAge);
+      if (data is! Map || !mounted) return false;
+      final detail = AacgArticleDetail.fromJson(data.cast<String, dynamic>());
+      if (detail.article.title.isEmpty &&
+          detail.content.isEmpty &&
+          detail.videos.isEmpty) {
+        return false;
+      }
+      setState(() {
+        _detail = detail;
+        _loading = false;
+      });
+      return true;
+    } catch (e) {
+      AppLogger.warning('Restore aacg article cache failed: $e');
+      return false;
+    }
+  }
+
+  /// 拉取详情并写缓存。showLoading=false（下拉刷新）时不闪加载态，
+  /// 已有内容时失败静默保留旧内容。
+  Future<void> _load({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    } else {
+      setState(() => _error = null);
+    }
     try {
       final detail = await _client.aacgArticle(widget.url);
       if (!mounted) return;
+      unawaited(DataCache.instance.write(_cacheKey, detail.toJson()));
       setState(() {
         _detail = detail;
         _loading = false;
       });
     } catch (e) {
       if (!mounted) return;
+      if (_detail != null) {
+        AppLogger.warning('Refresh aacg article failed: $e');
+        return;
+      }
       setState(() {
         _error = e.toString();
         _loading = false;
@@ -86,6 +133,7 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
       if (usable.isEmpty) {
         final refreshed = await _client.aacgArticle(widget.url);
         if (!mounted) return;
+        unawaited(DataCache.instance.write(_cacheKey, refreshed.toJson()));
         setState(() => _detail = refreshed);
         if (index < refreshed.videos.length) {
           usable = await _client.aacgProbe(_candidates(refreshed.videos[index]));
@@ -151,86 +199,90 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
     final article = detail.article;
     final cover = article.coverUrl;
     final date = article.publishedAt.split('T').first;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: AspectRatio(
-            aspectRatio: 16 / 9,
-            child: cover.isNotEmpty
-                ? CachedNetworkImage(
-                    imageUrl: aacgImageUrl(cover),
-                    fit: BoxFit.cover,
-                    placeholder: (_, __) =>
-                        Container(color: Theme.of(context).dividerColor),
-                    errorWidget: (_, __, ___) => Container(
+    return RefreshIndicator(
+      onRefresh: () => _load(showLoading: false),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
+              child: cover.isNotEmpty
+                  ? CachedNetworkImage(
+                      imageUrl: aacgImageUrl(cover),
+                      fit: BoxFit.cover,
+                      placeholder: (_, __) =>
+                          Container(color: Theme.of(context).dividerColor),
+                      errorWidget: (_, __, ___) => Container(
+                        color: Theme.of(context).dividerColor,
+                        child: const Icon(Icons.image_outlined, size: 40),
+                      ),
+                    )
+                  : Container(
                       color: Theme.of(context).dividerColor,
                       child: const Icon(Icons.image_outlined, size: 40),
                     ),
-                  )
-                : Container(
-                    color: Theme.of(context).dividerColor,
-                    child: const Icon(Icons.image_outlined, size: 40),
-                  ),
+            ),
           ),
-        ),
-        const SizedBox(height: 14),
-        Text(
-          article.title.isNotEmpty ? article.title : '（无标题）',
-          style: const TextStyle(
-              fontSize: 18, fontWeight: FontWeight.w700, height: 1.35),
-        ),
-        if (date.isNotEmpty) ...[
-          const SizedBox(height: 6),
-          Text(date,
-              style:
-                  TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
-        ],
-        for (var i = 0; i < detail.videos.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.icon(
-                onPressed: _probingIndex != null ? null : () => _play(i),
-                icon: _probingIndex == i
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.play_arrow),
-                label: Text(detail.videos.length == 1
-                    ? '播放视频'
-                    : '播放视频 ${i + 1}'),
+          const SizedBox(height: 14),
+          Text(
+            article.title.isNotEmpty ? article.title : '（无标题）',
+            style: const TextStyle(
+                fontSize: 18, fontWeight: FontWeight.w700, height: 1.35),
+          ),
+          if (date.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(date,
+                style: TextStyle(
+                    fontSize: 12, color: Theme.of(context).hintColor)),
+          ],
+          for (var i = 0; i < detail.videos.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.icon(
+                  onPressed: _probingIndex != null ? null : () => _play(i),
+                  icon: _probingIndex == i
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow),
+                  label: Text(detail.videos.length == 1
+                      ? '播放视频'
+                      : '播放视频 ${i + 1}'),
+                ),
               ),
             ),
-          ),
-        if (detail.content.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          const Divider(height: 1),
-          const SizedBox(height: 14),
-          ..._contentWidgets(detail),
+          if (detail.content.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            const Divider(height: 1),
+            const SizedBox(height: 14),
+            ..._contentWidgets(detail),
+          ],
+          if (detail.previous != null || detail.next != null) ...[
+            const SizedBox(height: 18),
+            const Divider(height: 1),
+            const SizedBox(height: 4),
+            if (detail.previous != null)
+              _AacgNavRow(
+                label: '上一篇',
+                icon: Icons.chevron_left,
+                article: detail.previous!,
+              ),
+            if (detail.next != null)
+              _AacgNavRow(
+                label: '下一篇',
+                icon: Icons.chevron_right,
+                article: detail.next!,
+              ),
+          ],
         ],
-        if (detail.previous != null || detail.next != null) ...[
-          const SizedBox(height: 18),
-          const Divider(height: 1),
-          const SizedBox(height: 4),
-          if (detail.previous != null)
-            _AacgNavRow(
-              label: '上一篇',
-              icon: Icons.chevron_left,
-              article: detail.previous!,
-            ),
-          if (detail.next != null)
-            _AacgNavRow(
-              label: '下一篇',
-              icon: Icons.chevron_right,
-              article: detail.next!,
-            ),
-        ],
-      ],
+      ),
     );
   }
 

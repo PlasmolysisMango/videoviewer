@@ -33,6 +33,9 @@ class _AacgCategoryFeedScreenState extends State<AacgCategoryFeedScreen> {
     return Scaffold(
       appBar: AppBar(title: Text(widget.name)),
       body: AacgFeedList(
+        // key 取路径而非完整 URL：镜像域名可能轮换，路径才是稳定标识。
+        cacheKey: 'aacg.feed.v1.'
+            '${Uri.tryParse(widget.url)?.path ?? widget.url}',
         load: (page) => _client.aacgFeed(widget.url, page: page),
         emptyText: '该分类暂无内容',
       ),
