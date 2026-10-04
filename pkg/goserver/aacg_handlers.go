@@ -88,7 +88,8 @@ func (s *Server) aacgMediaHostAllowed(host string) bool {
 }
 
 // aacgUsableTarget 返回缓存中的可用镜像；缓存缺失或过期时重新发现。
-// 发现过程持锁串行，并发请求共享同一次结果。
+// 发现过程持锁串行，并发请求共享同一次结果；发现失败且旧目标仍可用时
+// （校验为可识别首页）续用旧目标，避免发现链路抖动直接打断前端。
 func (s *Server) aacgUsableTarget(ctx context.Context) (aacg.Target, error) {
 	s.aacgMu.Lock()
 	defer s.aacgMu.Unlock()
@@ -97,6 +98,12 @@ func (s *Server) aacgUsableTarget(ctx context.Context) (aacg.Target, error) {
 	}
 	discovery, err := s.aacg.Discover(ctx)
 	if err != nil {
+		if stale := s.aacgTarget; stale.URL != "" {
+			if health, checkErr := s.aacg.Check(ctx, stale); checkErr == nil && health.Usable {
+				s.aacgAt = time.Now()
+				return stale, nil
+			}
+		}
 		return aacg.Target{}, err
 	}
 	for _, target := range discovery.Targets {

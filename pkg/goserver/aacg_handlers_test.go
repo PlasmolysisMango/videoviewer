@@ -2,6 +2,7 @@ package goserver
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/json"
@@ -653,4 +654,98 @@ func TestAacgClientUnavailable(t *testing.T) {
 			t.Fatalf("%s status = %d, want 503", name, code)
 		}
 	}
+}
+
+// 发现链路持续瞬断时的旧目标兜底：缓存过期后重发现失败，会话内旧目标若经
+// Check 校验仍为可识别首页，则刷新缓存续用；旧目标不可用时返回原始发现错误。
+// 入口以 hijack 后立即断连模拟网络级瞬断（客户端侧为 EOF/连接重置一类）。
+func TestAacgUsableTargetStaleFallback(t *testing.T) {
+	newUpstream := func(t *testing.T) (*httptest.Server, func(string) int) {
+		t.Helper()
+		var mu sync.Mutex
+		hits := map[string]int{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			hits[r.URL.Path]++
+			mu.Unlock()
+			switch r.URL.Path {
+			case "/entry":
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					t.Error("hijack unsupported")
+					return
+				}
+				conn, _, err := hijacker.Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				conn.Close()
+			case "/":
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				fmt.Fprint(w, `<!doctype html><html><head><title>51吃瓜网 - fixture</title></head><body>`+aacgTestIndex(aacgTestCardOne)+`</body></html>`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv, func(path string) int {
+			mu.Lock()
+			defer mu.Unlock()
+			return hits[path]
+		}
+	}
+	newStaleServer := func(t *testing.T, upstream *httptest.Server, stale string) *Server {
+		t.Helper()
+		client, err := aacg.New(aacg.Options{
+			EntryURL:  upstream.URL + "/entry",
+			Transport: upstream.Client().Transport,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := &Server{aacg: client}
+		s.aacgTarget = aacg.Target{URL: stale}
+		s.aacgAt = time.Now().Add(-2 * aacgTargetTTL)
+		return s
+	}
+
+	t.Run("stale target still usable", func(t *testing.T) {
+		upstream, hits := newUpstream(t)
+		s := newStaleServer(t, upstream, upstream.URL+"/")
+		target, err := s.aacgUsableTarget(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target.URL != upstream.URL+"/" {
+			t.Fatalf("target = %+v, want stale %s", target, upstream.URL+"/")
+		}
+		if time.Since(s.aacgAt) >= aacgTargetTTL {
+			t.Fatalf("stale fallback did not refresh aacgAt: %v", s.aacgAt)
+		}
+		if hits("/entry") < 2 {
+			t.Fatalf("entry hits = %d, want discovery retries before fallback", hits("/entry"))
+		}
+		if hits("/") != 1 {
+			t.Fatalf("stale verify hits = %d, want 1", hits("/"))
+		}
+	})
+
+	t.Run("stale target unusable", func(t *testing.T) {
+		upstream, hits := newUpstream(t)
+		s := newStaleServer(t, upstream, upstream.URL+"/missing")
+		target, err := s.aacgUsableTarget(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "aacg discover") {
+			t.Fatalf("err = %v, want discovery failure", err)
+		}
+		if target.URL != "" {
+			t.Fatalf("target = %+v, want empty on failure", target)
+		}
+		if hits("/entry") < 2 {
+			t.Fatalf("entry hits = %d, want discovery retries before fallback", hits("/entry"))
+		}
+		if hits("/missing") != 1 {
+			t.Fatalf("stale verify hits = %d, want 1", hits("/missing"))
+		}
+	})
 }

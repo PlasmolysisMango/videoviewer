@@ -3,6 +3,7 @@ package aacg
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,12 @@ const (
 	DefaultEntryURL = "https://aacg13.com/"
 	maxBodyBytes    = 2 << 20
 	maxHops         = 5
+
+	// 发现链路（入口→转发→落地）常被瞬态网络抖动打断（连接重置、EOF、DNS
+	// 波动）；浏览器对幂等 GET 会静默重试，这里对齐：网络级失败时整链重走，
+	// 每轮都重新获取站点当时给出的转发地址。解析/状态类错误不重试。
+	discoverRetries = 2
+	retryPause      = 500 * time.Millisecond
 )
 
 type Options struct {
@@ -338,7 +345,33 @@ func (c *Client) Fetch(ctx context.Context, raw string) (*http.Response, error) 
 	return resp, nil
 }
 
+// Discover 执行镜像发现；单次网络级瞬态失败（连接重置/EOF/DNS 抖动）时
+// 重试整条链（见 discoverRetries），轮次用尽返回最后一轮的 Discovery 与错误。
 func (c *Client) Discover(ctx context.Context) (Discovery, error) {
+	var (
+		last    Discovery
+		lastErr error
+	)
+	for attempt := 0; attempt <= discoverRetries; attempt++ {
+		if attempt > 0 {
+			if err := pause(ctx, retryPause); err != nil {
+				return last, fmt.Errorf("aacg discover: %w", err)
+			}
+		}
+		discovery, err := c.discoverOnce(ctx)
+		last = discovery
+		if err == nil {
+			return discovery, nil
+		}
+		if !transientNetworkError(err) {
+			return discovery, err
+		}
+		lastErr = err
+	}
+	return last, lastErr
+}
+
+func (c *Client) discoverOnce(ctx context.Context) (Discovery, error) {
 	result := Discovery{EntryURL: c.entry}
 	current, referer, budget := c.entry, "", maxHops
 	for {
@@ -377,6 +410,43 @@ func (c *Client) Discover(ctx context.Context) (Discovery, error) {
 		}
 		referer, current = current, next
 	}
+}
+
+// pause 等待 d 或 ctx 结束（重试间隔不响应取消就失去意义）。
+func pause(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// transientNetworkError 判定连接层瞬态失败（重置/EOF/DNS 抖动/TLS 读错），
+// 与浏览器静默重试的场景一致；校验、重定向预算、HTTP 状态与内容解析失败
+// 都属于确定性结果，不应重试。
+func transientNetworkError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var recordErr tls.RecordHeaderError
+	if errors.As(err, &recordErr) {
+		return true
+	}
+	return false
 }
 
 func forwardingURL(doc *goquery.Document, base *url.URL) (string, error) {

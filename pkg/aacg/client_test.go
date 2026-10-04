@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -483,5 +485,222 @@ func TestOptionsAndURLNormalization(t *testing.T) {
 	u, err := parseURL("https://EXAMPLE.invalid/path#section")
 	if err != nil || u.String() != "https://example.invalid/path" {
 		t.Fatalf("unexpected normalized URL: %v, %v", u, err)
+	}
+}
+
+// flakyTransport 包装真实 Transport：对指定路径的前 N 次请求注入连接层瞬态
+// 错误（ECONNRESET 一类），之后放行；count 记录各路径收到的请求次数。
+type flakyTransport struct {
+	base     http.RoundTripper
+	mu       sync.Mutex
+	failures map[string]int
+	counts   map[string]int
+}
+
+func newFlakyTransport(base http.RoundTripper, failures map[string]int) *flakyTransport {
+	return &flakyTransport{base: base, failures: failures, counts: make(map[string]int)}
+}
+
+func (f *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	f.counts[req.URL.Path]++
+	fail := f.failures[req.URL.Path] > 0
+	if fail {
+		f.failures[req.URL.Path]--
+	}
+	f.mu.Unlock()
+	if fail {
+		return nil, &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	}
+	return f.base.RoundTrip(req)
+}
+
+func (f *flakyTransport) count(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.counts[path]
+}
+
+const testForwardingHTML = `<a id="r" href="/landing">加载中</a><script>document.getElementById('r').click()</script>`
+
+// 首次落地请求瞬断 → 整链重试（入口被重新抓取）后成功。
+func TestDiscoverRetriesTransientFailures(t *testing.T) {
+	var landing string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/entry":
+			writeTestHTML(w, testForwardingHTML)
+		case "/landing":
+			writeTestHTML(w, landing)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	landing = testLandingHTML(t, srv.URL+"/primary", srv.URL+"/backup")
+	transport := newFlakyTransport(srv.Client().Transport, map[string]int{"/landing": 1})
+	c, err := New(Options{EntryURL: srv.URL + "/entry", Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := c.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovery.EntryURL != srv.URL+"/entry" || discovery.LandingURL != srv.URL+"/landing" || len(discovery.Targets) != 2 {
+		t.Fatalf("unexpected discovery: %+v", discovery)
+	}
+	if got := transport.count("/entry"); got != 2 {
+		t.Fatalf("entry requests = %d, want 2 (retry must re-walk the entry hop)", got)
+	}
+	if got := transport.count("/landing"); got != 2 {
+		t.Fatalf("landing requests = %d, want 2", got)
+	}
+}
+
+// 落地恒瞬断 → 恰好 1+discoverRetries 轮后失败，错误保留网络原文与最后一轮地址。
+func TestDiscoverRetryExhaustion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/entry" {
+			writeTestHTML(w, testForwardingHTML)
+			return
+		}
+		writeTestHTML(w, "<html></html>")
+	}))
+	defer srv.Close()
+	transport := newFlakyTransport(srv.Client().Transport, map[string]int{"/landing": 100})
+	c, err := New(Options{EntryURL: srv.URL + "/entry", Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := c.Discover(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "aacg discover") || !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Fatalf("err = %v, want exhausted discovery failure", err)
+	}
+	if discovery.EntryURL != srv.URL+"/entry" || discovery.LandingURL != srv.URL+"/landing" {
+		t.Fatalf("discovery = %+v, want last round entry/landing", discovery)
+	}
+	if got := transport.count("/entry"); got != 1+discoverRetries {
+		t.Fatalf("entry requests = %d, want %d", got, 1+discoverRetries)
+	}
+	if got := transport.count("/landing"); got != 1+discoverRetries {
+		t.Fatalf("landing requests = %d, want %d", got, 1+discoverRetries)
+	}
+}
+
+// 确定性失败（HTTP 状态 / 配置解析）不重试：入口只请求一次。
+func TestDiscoverNonTransientNoRetry(t *testing.T) {
+	t.Run("http status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+		transport := newFlakyTransport(srv.Client().Transport, nil)
+		c, err := New(Options{EntryURL: srv.URL + "/entry", Transport: transport})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Discover(context.Background()); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+			t.Fatalf("err = %v, want HTTP 403", err)
+		}
+		if got := transport.count("/entry"); got != 1 {
+			t.Fatalf("entry requests = %d, want 1 (deterministic failures must not retry)", got)
+		}
+	})
+	t.Run("config parse", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/entry" {
+				writeTestHTML(w, testForwardingHTML)
+				return
+			}
+			writeTestHTML(w, `<script>window.appConfig = {data: "broken", key: "key"};</script>`)
+		}))
+		defer srv.Close()
+		transport := newFlakyTransport(srv.Client().Transport, nil)
+		c, err := New(Options{EntryURL: srv.URL + "/entry", Transport: transport})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Discover(context.Background()); err == nil || !strings.Contains(err.Error(), "aacg config") {
+			t.Fatalf("err = %v, want config failure", err)
+		}
+		if transport.count("/entry") != 1 || transport.count("/landing") != 1 {
+			t.Fatalf("requests = entry %d landing %d, want 1/1", transport.count("/entry"), transport.count("/landing"))
+		}
+	})
+}
+
+func TestTransientNetworkError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"connection reset", &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}, true},
+		{"url error wrapping op error", &url.Error{Op: "Get", URL: "https://mirror.invalid/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}, true},
+		{"dns failure", &net.DNSError{Err: "no such host", Name: "mirror.invalid"}, true},
+		{"eof", io.EOF, true},
+		{"unexpected eof", fmt.Errorf("read body: %w", io.ErrUnexpectedEOF), true},
+		{"tls record", tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, true},
+		{"canceled", fmt.Errorf("aacg discover: %w", context.Canceled), false},
+		{"deadline", fmt.Errorf("aacg discover: %w", context.DeadlineExceeded), false},
+		{"validation", errors.New("aacg: non-public target"), false},
+		{"http status", errors.New("aacg: HTTP 503"), false},
+		{"content type", errors.New(`aacg: expected HTML, got "application/json"`), false},
+		{"redirect limit", errors.New("aacg: redirect limit exceeded"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := transientNetworkError(tc.err); got != tc.want {
+				t.Fatalf("transientNetworkError(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// 重试等待期间 ctx 取消 → 立即返回且不产生额外请求。
+func TestDiscoverRetryRespectsCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/entry" {
+			writeTestHTML(w, testForwardingHTML)
+			return
+		}
+		writeTestHTML(w, healthyHomepage)
+	}))
+	defer srv.Close()
+	transport := newFlakyTransport(srv.Client().Transport, map[string]int{"/landing": 100})
+	c, err := New(Options{EntryURL: srv.URL + "/entry", Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		_, err := c.Discover(ctx)
+		finished <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for transport.count("/landing") < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("first landing request never happened")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Discover did not stop after cancellation during retry pause")
+	}
+	if got := transport.count("/entry"); got != 1 {
+		t.Fatalf("entry requests = %d, want 1 (cancellation must stop the retry)", got)
+	}
+	if got := transport.count("/landing"); got != 1 {
+		t.Fatalf("landing requests = %d, want 1", got)
 	}
 }
