@@ -345,8 +345,9 @@ func (c *Client) Fetch(ctx context.Context, raw string) (*http.Response, error) 
 	return resp, nil
 }
 
-// Discover 执行镜像发现；单次网络级瞬态失败（连接重置/EOF/DNS 抖动）时
-// 重试整条链（见 discoverRetries），轮次用尽返回最后一轮的 Discovery 与错误。
+// Discover 执行镜像发现；单次网络级瞬态失败（连接重置/EOF/DNS 抖动/响应头
+// 停顿超时）时重试整条链（见 discoverRetries），轮次用尽返回最后一轮的
+// Discovery 与错误。
 func (c *Client) Discover(ctx context.Context) (Discovery, error) {
 	var (
 		last    Discovery
@@ -363,7 +364,7 @@ func (c *Client) Discover(ctx context.Context) (Discovery, error) {
 		if err == nil {
 			return discovery, nil
 		}
-		if !transientNetworkError(err) {
+		if !transientNetworkError(ctx, err) {
 			return discovery, err
 		}
 		lastErr = err
@@ -424,10 +425,19 @@ func pause(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// transientNetworkError 判定连接层瞬态失败（重置/EOF/DNS 抖动/TLS 读错），
-// 与浏览器静默重试的场景一致；校验、重定向预算、HTTP 状态与内容解析失败
-// 都属于确定性结果，不应重试。
-func transientNetworkError(err error) bool {
+// transientNetworkError 判定连接层瞬态失败（重置/EOF/DNS 抖动/TLS 读错/单请求
+// 超时），与浏览器静默重试的场景一致；校验、重定向预算、HTTP 状态与内容解析
+// 失败都属于确定性结果，不应重试。调用方预算（ctx）已耗尽时一律不重试。
+func transientNetworkError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	// 单请求超时（http.Client.Timeout 或指纹客户端内部超时等，如响应头长时间
+	// 停顿）属于瞬态；调用方 ctx 未耗尽时按浏览器行为重试。
+	var timeoutErr net.Error
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}

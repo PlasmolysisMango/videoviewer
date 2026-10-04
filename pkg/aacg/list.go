@@ -14,7 +14,9 @@ import (
 
 var (
 	listCoverPattern = regexp.MustCompile(`loadBannerDirect\('([^']+)'`)
-	errPromoCard     = errors.New("aacg list: promotional card")
+	// errSkipCard 标记不承载内容的卡片（促销角标卡片，或站点偶发渲染的
+	// 无标题空壳卡片，如占位/已下架条目）——跳过而非让整页解析失败。
+	errSkipCard = errors.New("aacg list: skipped card")
 )
 
 // CategoryList fetches one page of a category archive from the given category URL; page 1 is the newest entries.
@@ -98,7 +100,7 @@ func listCards(archive *goquery.Selection, base *url.URL) ([]ArticleSummary, err
 	var parseErr error
 	archive.Find("article[itemtype$='/BlogPosting']").EachWithBreak(func(_ int, card *goquery.Selection) bool {
 		item, err := listCard(card, base)
-		if errors.Is(err, errPromoCard) {
+		if errors.Is(err, errSkipCard) {
 			return true
 		}
 		if err != nil {
@@ -127,7 +129,11 @@ func listCard(card *goquery.Selection, base *url.URL) (ArticleSummary, error) {
 	if err != nil {
 		return item, err
 	}
-	headline, err := contentOne(card.Find(`h2[itemprop="headline"]`), "card headline")
+	headlines := card.Find(`h2[itemprop="headline"]`)
+	if headlines.Length() == 0 {
+		return item, errSkipCard // 无标题空壳卡片
+	}
+	headline, err := contentOne(headlines, "card headline")
 	if err != nil {
 		return item, err
 	}
@@ -136,7 +142,7 @@ func listCard(card *goquery.Selection, base *url.URL) (ArticleSummary, error) {
 	item.Title = contentSpace(contentText(clean))
 	if item.Title == "" {
 		if headline.Find("div.wrap").Length() > 0 {
-			return item, errPromoCard
+			return item, errSkipCard
 		}
 		return item, fmt.Errorf("aacg list: empty card headline")
 	}

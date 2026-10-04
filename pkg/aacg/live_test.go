@@ -11,14 +11,32 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"videoviewer/pkg/av/browser"
 )
 
-func TestLiveDiscoverAndCheck(t *testing.T) {
-	c, err := New(Options{
-		EntryURL: os.Getenv("AACG_ENTRY_URL"),
-		Proxy:    os.Getenv("AACG_PROXY"),
-		Timeout:  20 * time.Second,
+// liveOptions 构造与生产 goserver 同构的客户端选项：默认注入浏览器指纹传输
+// （落地镜像按 TLS 指纹放行，标准库连接会被重置）；AACG_STD_TRANSPORT=1
+// 可退回标准库传输，仅用于对比诊断。AACG_PROXY 作为代理传给指纹客户端。
+func liveOptions(t *testing.T) Options {
+	t.Helper()
+	proxy := os.Getenv("AACG_PROXY")
+	if os.Getenv("AACG_STD_TRANSPORT") != "" {
+		return Options{EntryURL: os.Getenv("AACG_ENTRY_URL"), Proxy: proxy, Timeout: 20 * time.Second}
+	}
+	tr, err := browser.NewTransport(browser.Options{
+		Profile: "chrome_150",
+		Proxy:   proxy,
+		Timeout: 25 * time.Second,
 	})
+	if err != nil {
+		t.Fatalf("browser transport init: %v", err)
+	}
+	return Options{EntryURL: os.Getenv("AACG_ENTRY_URL"), Timeout: 20 * time.Second, Transport: tr}
+}
+
+func TestLiveDiscoverAndCheck(t *testing.T) {
+	c, err := New(liveOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,11 +89,7 @@ func TestLiveDiscoverAndCheck(t *testing.T) {
 }
 
 func TestLiveCategories(t *testing.T) {
-	c, err := New(Options{
-		EntryURL: os.Getenv("AACG_ENTRY_URL"),
-		Proxy:    os.Getenv("AACG_PROXY"),
-		Timeout:  20 * time.Second,
-	})
+	c, err := New(liveOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,11 +130,7 @@ func TestLiveCategories(t *testing.T) {
 }
 
 func TestLiveCategoryList(t *testing.T) {
-	c, err := New(Options{
-		EntryURL: os.Getenv("AACG_ENTRY_URL"),
-		Proxy:    os.Getenv("AACG_PROXY"),
-		Timeout:  20 * time.Second,
-	})
+	c, err := New(liveOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,11 +203,7 @@ func TestLiveCategoryList(t *testing.T) {
 }
 
 func TestLiveArticle(t *testing.T) {
-	c, err := New(Options{
-		EntryURL: os.Getenv("AACG_ENTRY_URL"),
-		Proxy:    os.Getenv("AACG_PROXY"),
-		Timeout:  20 * time.Second,
-	})
+	c, err := New(liveOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,11 +359,7 @@ func liveContentParts(detail ArticleDetail) (int, map[string]bool, error) {
 }
 
 func TestLiveFeed(t *testing.T) {
-	c, err := New(Options{
-		EntryURL: os.Getenv("AACG_ENTRY_URL"),
-		Proxy:    os.Getenv("AACG_PROXY"),
-		Timeout:  20 * time.Second,
-	})
+	c, err := New(liveOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,11 +431,7 @@ func TestLiveFeed(t *testing.T) {
 }
 
 func TestLiveSearch(t *testing.T) {
-	c, err := New(Options{
-		EntryURL: os.Getenv("AACG_ENTRY_URL"),
-		Proxy:    os.Getenv("AACG_PROXY"),
-		Timeout:  20 * time.Second,
-	})
+	c, err := New(liveOptions(t))
 	if err != nil {
 		t.Fatal(err)
 	}

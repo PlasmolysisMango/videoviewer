@@ -126,7 +126,8 @@ func TestDiscoverAndCheckIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !good.Usable || !good.Recognized || !good.HTTPAvailable || good.StatusCode != 200 || good.FinalURL != srv.URL+"/home" || good.Bytes != len(healthyHomepage) || good.ArticleCount != 1 || good.Elapsed <= 0 {
+	// Elapsed 不断言：计时器粒度较粗时（Windows 上约 0.5ms），亚毫秒操作会合法测出 0。
+	if !good.Usable || !good.Recognized || !good.HTTPAvailable || good.StatusCode != 200 || good.FinalURL != srv.URL+"/home" || good.Bytes != len(healthyHomepage) || good.ArticleCount != 1 {
 		t.Fatalf("unexpected health: %+v", good)
 	}
 	bad, err := c.Check(context.Background(), report.Targets[1])
@@ -169,7 +170,8 @@ func TestCheckRejectsUnusableResponses(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.reason) || health.Usable || health.StatusCode != tc.status || health.FinalURL != srv.URL {
 				t.Fatalf("unexpected outcome: %+v, %v", health, err)
 			}
-			if health.Reason != err.Error() || health.Bytes == 0 || health.Elapsed <= 0 {
+			// 同 TestDiscoverAndCheckIntegration：Elapsed 受计时器粒度影响，不断言。
+			if health.Reason != err.Error() || health.Bytes == 0 {
 				t.Fatalf("missing failure metadata: %+v", health)
 			}
 		})
@@ -558,6 +560,39 @@ func TestDiscoverRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+// 首次落地响应头停顿超过单请求超时 → 按瞬态重试并成功（对齐真实镜像的偶发停顿）。
+func TestDiscoverRetriesHeaderStall(t *testing.T) {
+	var landing string
+	var stalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/entry":
+			writeTestHTML(w, testForwardingHTML)
+		case "/landing":
+			if stalls.Add(1) == 1 {
+				time.Sleep(500 * time.Millisecond) // 超过下方 150ms 单请求超时
+				return
+			}
+			writeTestHTML(w, landing)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	landing = testLandingHTML(t, srv.URL+"/primary", srv.URL+"/backup")
+	c, err := New(Options{EntryURL: srv.URL + "/entry", Transport: srv.Client().Transport, Timeout: 150 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := c.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovery.LandingURL != srv.URL+"/landing" || len(discovery.Targets) != 2 || stalls.Load() != 2 {
+		t.Fatalf("unexpected discovery: %+v stalls=%d", discovery, stalls.Load())
+	}
+}
+
 // 落地恒瞬断 → 恰好 1+discoverRetries 轮后失败，错误保留网络原文与最后一轮地址。
 func TestDiscoverRetryExhaustion(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -631,29 +666,36 @@ func TestDiscoverNonTransientNoRetry(t *testing.T) {
 }
 
 func TestTransientNetworkError(t *testing.T) {
+	exhausted, cancel := context.WithCancel(context.Background())
+	cancel()
 	cases := []struct {
 		name string
+		ctx  context.Context
 		err  error
 		want bool
 	}{
-		{"connection reset", &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}, true},
-		{"url error wrapping op error", &url.Error{Op: "Get", URL: "https://mirror.invalid/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}, true},
-		{"dns failure", &net.DNSError{Err: "no such host", Name: "mirror.invalid"}, true},
-		{"eof", io.EOF, true},
-		{"unexpected eof", fmt.Errorf("read body: %w", io.ErrUnexpectedEOF), true},
-		{"tls record", tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, true},
-		{"canceled", fmt.Errorf("aacg discover: %w", context.Canceled), false},
-		{"deadline", fmt.Errorf("aacg discover: %w", context.DeadlineExceeded), false},
-		{"validation", errors.New("aacg: non-public target"), false},
-		{"http status", errors.New("aacg: HTTP 503"), false},
-		{"content type", errors.New(`aacg: expected HTML, got "application/json"`), false},
-		{"redirect limit", errors.New("aacg: redirect limit exceeded"), false},
-		{"nil", nil, false},
+		{"connection reset", context.Background(), &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}, true},
+		{"url error wrapping op error", context.Background(), &url.Error{Op: "Get", URL: "https://mirror.invalid/", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}, true},
+		{"dns failure", context.Background(), &net.DNSError{Err: "no such host", Name: "mirror.invalid"}, true},
+		{"eof", context.Background(), io.EOF, true},
+		{"unexpected eof", context.Background(), fmt.Errorf("read body: %w", io.ErrUnexpectedEOF), true},
+		{"tls record", context.Background(), tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, true},
+		// 单请求超时（响应头停顿）在调用方预算未耗尽时按瞬态重试。
+		{"response header stall", context.Background(), &url.Error{Op: "Get", URL: "https://mirror.invalid/", Err: context.DeadlineExceeded}, true},
+		{"stall with exhausted caller", exhausted, &url.Error{Op: "Get", URL: "https://mirror.invalid/", Err: context.DeadlineExceeded}, false},
+		{"canceled", context.Background(), fmt.Errorf("aacg discover: %w", context.Canceled), false},
+		// 调用方 ctx 尚在而错误是 DeadlineExceeded：来自请求自身的更紧超时，可重试。
+		{"inner deadline with live caller", context.Background(), fmt.Errorf("aacg discover: %w", context.DeadlineExceeded), true},
+		{"validation", context.Background(), errors.New("aacg: non-public target"), false},
+		{"http status", context.Background(), errors.New("aacg: HTTP 503"), false},
+		{"content type", context.Background(), errors.New(`aacg: expected HTML, got "application/json"`), false},
+		{"redirect limit", context.Background(), errors.New("aacg: redirect limit exceeded"), false},
+		{"nil", context.Background(), nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := transientNetworkError(tc.err); got != tc.want {
-				t.Fatalf("transientNetworkError(%v) = %t, want %t", tc.err, got, tc.want)
+			if got := transientNetworkError(tc.ctx, tc.err); got != tc.want {
+				t.Fatalf("transientNetworkError(%v, %v) = %t, want %t", tc.ctx.Err(), tc.err, got, tc.want)
 			}
 		})
 	}

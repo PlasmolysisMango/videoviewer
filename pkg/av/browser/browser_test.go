@@ -64,3 +64,51 @@ func TestAdapterAgainstLocalServer(t *testing.T) {
 		t.Fatalf("request header conversion failed: ua=%q referer=%q", gotUA, gotReferer)
 	}
 }
+
+// TestTransportRedirectPassthrough 验证 NewTransport 强制不跟随重定向：
+// 作为 RoundTripper 使用时 3xx 原样返回，重定向交由外层 http.Client 的策略处理。
+func TestTransportRedirectPassthrough(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/entry":
+			http.Redirect(w, r, "/home", http.StatusFound)
+		case "/home":
+			_, _ = io.WriteString(w, "home")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	// FollowRedirect: true 应被忽略（强制 false）。
+	tr, err := NewTransport(Options{Timeout: 10 * time.Second, FollowRedirect: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/entry", nil)
+	raw, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer raw.Body.Close()
+	if raw.StatusCode != http.StatusFound || raw.Header.Get("Location") != "/home" {
+		t.Fatalf("expected 302 pass-through, got status=%d location=%q", raw.StatusCode, raw.Header.Get("Location"))
+	}
+
+	redirected := 0
+	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		redirected++
+		return nil
+	}
+	resp, err := client.Get(srv.URL + "/entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "home" || redirected != 1 {
+		t.Fatalf("client-led redirect failed: status=%d body=%q redirects=%d", resp.StatusCode, body, redirected)
+	}
+}

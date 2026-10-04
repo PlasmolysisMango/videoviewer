@@ -72,6 +72,27 @@ func New(opt Options) (av.Requester, error) {
 	return &adapter{client: tlsHTTP}, nil
 }
 
+// NewTransport 返回一个浏览器指纹的 http.RoundTripper，与 New 的区别是强制不
+// 跟随重定向：3xx 原样交还调用方，由调用方 http.Client 的 CheckRedirect（校验、
+// 跳数预算）决定后续，避免内部直连绕过调用方的重定向策略（如 pkg/aacg）。
+func NewTransport(opt Options) (http.RoundTripper, error) {
+	opt.FollowRedirect = false
+	r, err := New(opt)
+	if err != nil {
+		return nil, err
+	}
+	return roundTripper{doer: r}, nil
+}
+
+// roundTripper 把 av.Requester 适配为标准 http.RoundTripper。
+type roundTripper struct {
+	doer av.Requester
+}
+
+func (t roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.doer.Do(req)
+}
+
 // adapter 把 tls-client(fhttp) 包装成标准 net/http 的 Requester。
 type adapter struct {
 	client tls_client.HttpClient

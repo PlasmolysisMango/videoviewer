@@ -20,6 +20,7 @@ const (
 	listTestFirstNav        = `<ul class="page-navigator"><li class="active"><a href="/category/wpcz/">1</a></li><li><span></span></li><li><a href="/category/wpcz/3070/">3070</a></li><li class="next"><a href="/category/wpcz/2/">下一页</a></li></ul>`
 	listTestCardOne         = `<article itemscope itemtype="http://schema.org/BlogPosting"><meta itemprop="url mainEntityOfPage" content="/archives/277594/" /><a href="/archives/277594/"><div class="post-card" id="post-card-277594"><script type="text/javascript">loadBannerDirect('https://pic.example.invalid/one.jpeg', '', document.querySelector('#post-card-277594'));</script><h2 class="post-card-title" itemprop="headline">First <em>headline</em></h2><span itemprop="datePublished" content="2026-10-03T17:37:24+00:00">2026 年 10 月 03 日</span></div></a></article>`
 	listTestCardTwo         = `<article itemscope itemtype="http://schema.org/BlogPosting"><meta itemprop="url mainEntityOfPage" content="/archives/277585/" /><a href="/archives/277585/"><div class="post-card" id="post-card-277585"><script type="text/javascript">loadBannerDirect('', '', document.querySelector('#post-card-277585'));</script><h2 class="post-card-title" itemprop="headline">Second headline</h2><span itemprop="datePublished" content="2026-10-03T17:30:00+00:00">2026 年 10 月 03 日</span></div></a></article>`
+	listTestShellCard       = `<article itemscope itemtype="http://schema.org/BlogPosting"><meta itemprop="url mainEntityOfPage" content="/archives/277664/" /><a href="/archives/277664/"><div class="post-card" id="post-card-277664"><script type="text/javascript">loadBannerDirect('https://pic.example.invalid/shell.jpeg', '', document.querySelector('#post-card-277664'));</script><div class="post-card-mask "><div class="post-card-container"><div class="post-card-info"></div></div></div></div></a></article>`
 )
 
 func listTestPage(archive string) string {
@@ -104,6 +105,23 @@ func TestCategoryList(t *testing.T) {
 			t.Fatalf("single page = %+v, %v", got, err)
 		}
 	})
+	t.Run("skips titleless shell card", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeTestHTML(w, listTestPage(listTestArchive(listTestFirstBreadcrumb, listTestShellCard, listTestCardTwo, listTestFirstInfo, listTestFirstNav)))
+		}))
+		defer srv.Close()
+		got, err := newTestClient(t, srv, "").CategoryList(context.Background(), srv.URL+"/category/wpcz/", 1)
+		want := ArticleList{
+			Title: "今日吃瓜",
+			Items: []ArticleSummary{
+				{Title: "Second headline", URL: srv.URL + "/archives/277585/", PublishedAt: "2026-10-03T17:30:00+00:00"},
+			},
+			Pagination: Pagination{Current: 1, Total: 3070, NextURL: srv.URL + "/category/wpcz/2/"},
+		}
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("shell card = %+v, %v; want %+v", got, err, want)
+		}
+	})
 }
 
 func TestCategoryListRejections(t *testing.T) {
@@ -123,7 +141,6 @@ func TestCategoryListRejections(t *testing.T) {
 		{name: "duplicate archive", page: 1, body: listTestPage(listTestArchive(listTestBreadcrumb, listTestCardOne) + listTestArchive(listTestBreadcrumb, listTestCardOne)), want: "expected one feed container, found 2"},
 		{name: "missing breadcrumb", page: 1, body: listTestPage(listTestArchive(listTestCardOne)), want: "expected one breadcrumb"},
 		{name: "card without link", page: 1, body: listTestPage(listTestArchive(listTestBreadcrumb, `<article itemscope itemtype="http://schema.org/BlogPosting"><h2 itemprop="headline">T</h2></article>`)), want: "expected one card link"},
-		{name: "card without headline", page: 1, body: listTestPage(listTestArchive(listTestBreadcrumb, `<article itemscope itemtype="http://schema.org/BlogPosting"><meta itemprop="url mainEntityOfPage" content="/archives/1/" /></article>`)), want: "expected one card headline"},
 		{name: "empty headline", page: 1, body: listTestPage(listTestArchive(listTestBreadcrumb, `<article itemscope itemtype="http://schema.org/BlogPosting"><meta itemprop="url mainEntityOfPage" content="/archives/1/" /><h2 itemprop="headline">  </h2></article>`)), want: "empty card headline"},
 		{name: "ambiguous card date", page: 1, body: listTestPage(listTestArchive(listTestBreadcrumb, `<article itemscope itemtype="http://schema.org/BlogPosting"><meta itemprop="url mainEntityOfPage" content="/archives/1/" /><h2 itemprop="headline">T</h2><span itemprop="datePublished" content="a"></span><span itemprop="datePublished" content="b"></span></article>`)), want: "ambiguous card date"},
 		{name: "unsafe cover URL", page: 1, body: listTestPage(listTestArchive(listTestBreadcrumb, `<article itemscope itemtype="http://schema.org/BlogPosting"><meta itemprop="url mainEntityOfPage" content="/archives/1/" /><h2 itemprop="headline">T</h2><script>loadBannerDirect('javascript:alert(1)', '', 0);</script></article>`)), want: "invalid link"},

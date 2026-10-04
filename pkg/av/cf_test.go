@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -174,8 +175,8 @@ func TestCFStoreRoundTripAndProvider(t *testing.T) {
 		t.Error("不应命中未存主机")
 	}
 
-	// 文件权限应为 0600（凭证敏感）。
-	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != 0o600 {
+	// 文件权限应为 0600（凭证敏感）；Windows 不支持 POSIX 权限位，跳过断言。
+	if fi, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("cf_overrides.json 权限=%o 期望 600", fi.Mode().Perm())
 	}
 
