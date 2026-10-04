@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../api/aacg_models.dart';
@@ -158,10 +159,225 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
           const SizedBox(height: 18),
           const Divider(height: 1),
           const SizedBox(height: 14),
-          Text(detail.content,
-              style: const TextStyle(fontSize: 14, height: 1.6)),
+          ..._contentWidgets(detail),
+        ],
+        if (detail.previous != null || detail.next != null) ...[
+          const SizedBox(height: 18),
+          const Divider(height: 1),
+          const SizedBox(height: 4),
+          if (detail.previous != null)
+            _AacgNavRow(
+              label: '上一篇',
+              icon: Icons.chevron_left,
+              article: detail.previous!,
+            ),
+          if (detail.next != null)
+            _AacgNavRow(
+              label: '下一篇',
+              icon: Icons.chevron_right,
+              article: detail.next!,
+            ),
         ],
       ],
+    );
+  }
+
+  /// 正文区块：连续非图片段合并为一个富文本（段间按同一 Text 排版），
+  /// 图片段独立成块；parts 为空时退化为纯文本（兼容旧后端）。
+  List<Widget> _contentWidgets(AacgArticleDetail detail) {
+    final parts = detail.contentParts;
+    if (parts.isEmpty) {
+      return [
+        _AacgContentText(
+          content: detail.content,
+          parts: parts,
+          start: 0,
+          end: 0,
+        ),
+      ];
+    }
+    final widgets = <Widget>[];
+    var i = 0;
+    while (i < parts.length) {
+      if (parts[i].imageUrl.isNotEmpty) {
+        widgets.add(_AacgContentImage(url: parts[i].imageUrl));
+        i++;
+        continue;
+      }
+      var j = i;
+      while (j < parts.length && parts[j].imageUrl.isEmpty) {
+        j++;
+      }
+      widgets.add(_AacgContentText(
+        content: detail.content,
+        parts: parts,
+        start: i,
+        end: j,
+      ));
+      i = j;
+    }
+    return widgets;
+  }
+}
+
+/// 正文富文本：链接段（跳转其他文章）主题色 + 下划线，点击进对应文章详情。
+/// 仅渲染 parts[start, end) 范围，连续文本可与其他范围分开排版。
+class _AacgContentText extends StatefulWidget {
+  final String content;
+  final List<AacgContentPart> parts;
+  final int start;
+  final int end;
+
+  const _AacgContentText({
+    required this.content,
+    required this.parts,
+    required this.start,
+    required this.end,
+  });
+
+  @override
+  State<_AacgContentText> createState() => _AacgContentTextState();
+}
+
+class _AacgContentTextState extends State<_AacgContentText> {
+  final List<TapGestureRecognizer> _recognizers = [];
+  late TextSpan _span;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _span = _buildSpan();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AacgContentText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.content != widget.content ||
+        oldWidget.start != widget.start ||
+        oldWidget.end != widget.end ||
+        !identical(oldWidget.parts, widget.parts)) {
+      _span = _buildSpan();
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposeRecognizers();
+    super.dispose();
+  }
+
+  void _disposeRecognizers() {
+    for (final recognizer in _recognizers) {
+      recognizer.dispose();
+    }
+    _recognizers.clear();
+  }
+
+  TextSpan _buildSpan() {
+    _disposeRecognizers();
+    const baseStyle = TextStyle(fontSize: 14, height: 1.6);
+    if (widget.end <= widget.start) {
+      return TextSpan(text: widget.content, style: baseStyle);
+    }
+    final primary = Theme.of(context).colorScheme.primary;
+    final linkStyle = TextStyle(
+      color: primary,
+      decoration: TextDecoration.underline,
+      decorationColor: primary,
+    );
+    final spans = <InlineSpan>[];
+    for (var i = widget.start; i < widget.end; i++) {
+      final part = widget.parts[i];
+      if (part.url.isEmpty) {
+        spans.add(TextSpan(text: part.text));
+        continue;
+      }
+      final recognizer = TapGestureRecognizer()
+        ..onTap = () {
+          if (!mounted) return;
+          pushAacgArticle(
+              context, AacgArticle(title: part.text, url: part.url));
+        };
+      _recognizers.add(recognizer);
+      spans.add(
+          TextSpan(text: part.text, style: linkStyle, recognizer: recognizer));
+    }
+    return TextSpan(style: baseStyle, children: spans);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Text.rich(_span);
+  }
+}
+
+/// 正文图片块：走后端解密代理（站点图片为混淆密文），撑满栏宽等比显示。
+class _AacgContentImage extends StatelessWidget {
+  final String url;
+
+  const _AacgContentImage({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    final placeholderColor = Theme.of(context).dividerColor;
+    Widget fallback() => Container(
+          height: 180,
+          color: placeholderColor,
+          child: const Icon(Icons.image_outlined, size: 40),
+        );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: CachedNetworkImage(
+          imageUrl: aacgImageUrl(url),
+          width: double.infinity,
+          fit: BoxFit.fitWidth,
+          placeholder: (_, __) =>
+              Container(height: 180, color: placeholderColor),
+          errorWidget: (_, __, ___) => fallback(),
+        ),
+      ),
+    );
+  }
+}
+
+/// 页尾上一篇/下一篇跳转行（与正文内嵌的合集链接分离）。
+class _AacgNavRow extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final AacgArticle article;
+
+  const _AacgNavRow({
+    required this.label,
+    required this.icon,
+    required this.article,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hintColor = Theme.of(context).hintColor;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => pushAacgArticle(context, article),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: hintColor),
+            const SizedBox(width: 4),
+            Text('$label：', style: TextStyle(fontSize: 13, color: hintColor)),
+            Expanded(
+              child: Text(
+                article.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

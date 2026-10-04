@@ -88,25 +88,61 @@ class AacgVideoLink {
   }
 }
 
+/// 正文切段：链接段 url 非空（与其他文章的绝对地址），图片段 imageUrl 非空
+/// （text 为空），纯文本段两者皆空串。
+class AacgContentPart {
+  final String text;
+  final String url;
+  final String imageUrl;
+
+  AacgContentPart({required this.text, this.url = '', this.imageUrl = ''});
+
+  factory AacgContentPart.fromJson(Map<String, dynamic> json) {
+    return AacgContentPart(
+      text: json['text'] as String? ?? '',
+      url: json['url'] as String? ?? '',
+      imageUrl: json['image_url'] as String? ?? '',
+    );
+  }
+}
+
 class AacgArticleDetail {
   final AacgArticle article;
   final String content;
+  final List<AacgContentPart> contentParts;
   final List<AacgVideoLink> videos;
+
+  /// 页尾「上一篇/下一篇」导航（与正文内嵌的合集链接无关）；缺失为 null。
+  final AacgArticle? previous;
+  final AacgArticle? next;
 
   AacgArticleDetail({
     required this.article,
     required this.content,
+    required this.contentParts,
     required this.videos,
+    this.previous,
+    this.next,
   });
 
   factory AacgArticleDetail.fromJson(Map<String, dynamic> json) {
+    final prev = json['prev'];
+    final next = json['next'];
     return AacgArticleDetail(
       article: AacgArticle.fromJson(json),
       content: json['content'] as String? ?? '',
+      contentParts: (json['content_parts'] as List<dynamic>?)
+              ?.map((e) => AacgContentPart.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          const <AacgContentPart>[],
       videos: (json['videos'] as List<dynamic>?)
               ?.map((e) => AacgVideoLink.fromJson(e as Map<String, dynamic>))
               .toList() ??
           const <AacgVideoLink>[],
+      previous: prev is Map<String, dynamic>
+          ? AacgArticle.fromJson(prev)
+          : null,
+      next: next is Map<String, dynamic> ? AacgArticle.fromJson(next) : null,
     );
   }
 }

@@ -52,8 +52,25 @@ type ArticleList struct {
 
 type ArticleDetail struct {
 	ArticleSummary
-	Content string
-	Videos  []VideoLink
+	Content      string
+	ContentParts []ContentPart
+	Videos       []VideoLink
+	Previous     *ArticleLink // footer navigation, never inline content links
+	Next         *ArticleLink
+}
+
+// ContentPart is one run of article text; URL is set for links to other
+// articles, ImageURL for body images (Text is empty then).
+type ContentPart struct {
+	Text     string
+	URL      string
+	ImageURL string
+}
+
+// ArticleLink is one footer navigation entry (previous/next article).
+type ArticleLink struct {
+	Title string
+	URL   string
 }
 
 type VideoLink struct {

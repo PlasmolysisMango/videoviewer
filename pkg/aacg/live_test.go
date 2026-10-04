@@ -4,7 +4,9 @@ package aacg
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -260,6 +262,38 @@ func TestLiveArticle(t *testing.T) {
 			}
 			t.Logf("video type=%q host=%s", video.Type, host)
 		}
+		if links, imageHosts, err := liveContentParts(detail); err != nil {
+			t.Errorf("article %s content parts: %v", item.URL, err)
+		} else if links > 0 || len(imageHosts) > 0 {
+			hosts := make([]string, 0, len(imageHosts))
+			for host := range imageHosts {
+				hosts = append(hosts, host)
+			}
+			sort.Strings(hosts)
+			t.Logf("article links=%d image hosts=%v", links, hosts)
+		}
+		articleHost := ""
+		if parsed, err := parseURL(detail.URL); err == nil {
+			articleHost = parsed.Host
+		}
+		for _, nav := range []struct {
+			label string
+			link  *ArticleLink
+		}{{"prev", detail.Previous}, {"next", detail.Next}} {
+			if nav.link == nil {
+				t.Logf("article %s %s: absent", item.URL, nav.label)
+				continue
+			}
+			if nav.link.Title == "" {
+				t.Errorf("article %s %s has empty title", item.URL, nav.label)
+			}
+			parsed, err := parseURL(nav.link.URL)
+			if err != nil || parsed.Host != articleHost {
+				t.Errorf("article %s %s url %q invalid or off host: %v", item.URL, nav.label, nav.link.URL, err)
+				continue
+			}
+			t.Logf("article %s %s title=%q url=%s", item.URL, nav.label, nav.link.Title, nav.link.URL)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		t.Fatalf("live run did not finish within its deadline: %v", err)
@@ -267,6 +301,46 @@ func TestLiveArticle(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no article detail could be fetched and validated")
 	}
+}
+
+// liveContentParts 校验正文切段拼回不变式、链接同 host 与图片地址可解析，
+// 返回链接数与图片 host 集合（不下载媒体）。
+func liveContentParts(detail ArticleDetail) (int, map[string]bool, error) {
+	if len(detail.ContentParts) == 0 {
+		return 0, nil, nil
+	}
+	article, err := parseURL(detail.URL)
+	if err != nil {
+		return 0, nil, err
+	}
+	joined := strings.Builder{}
+	links := 0
+	imageHosts := map[string]bool{}
+	for _, part := range detail.ContentParts {
+		joined.WriteString(part.Text)
+		if part.ImageURL != "" {
+			parsed, err := parseURL(part.ImageURL)
+			if err != nil {
+				return 0, nil, fmt.Errorf("unparsable image: %w", err)
+			}
+			imageHosts[parsed.Host] = true
+		}
+		if part.URL == "" {
+			continue
+		}
+		links++
+		parsed, err := parseURL(part.URL)
+		if err != nil {
+			return 0, nil, fmt.Errorf("unparsable link: %w", err)
+		}
+		if parsed.Host != article.Host {
+			return 0, nil, fmt.Errorf("link host %s differs from article host %s", parsed.Host, article.Host)
+		}
+	}
+	if joined.String() != detail.Content {
+		return 0, nil, fmt.Errorf("parts reassemble %d bytes, content has %d", joined.Len(), len(detail.Content))
+	}
+	return links, imageHosts, nil
 }
 
 func TestLiveFeed(t *testing.T) {

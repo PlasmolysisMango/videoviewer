@@ -70,6 +70,9 @@ func aacgTestArticlePage() string {
 		aacgTestArticleHeadline + aacgTestArticleDate + aacgTestArticleCover +
 		`<div class="post-content" itemprop="articleBody"><p>First paragraph.</p>` +
 		`<div class="dplayer" data-config='` + aacgTestPlayerConfig + `'></div>` +
+		`<p>See <a href="/archives/12/">later post</a> for details.</p>` +
+		`<p><img src="/usr/plugins/tbxw/zw.png?v=3" data-xuid="1" data-xkrkllgl="https://pic.example.invalid/body.jpeg" /></p>` +
+		`<div class="post-near"><nav><span class="prev"><a href="/archives/9/" title="Earlier post"><span class="post-near-span"><span class="prev-t">上一篇: </span><br><span>previous entry</span></span></a></span><span class="next"><a href="/archives/21/">Later entry</a></span></nav></div>` +
 		`</div></article></div></body></html>`
 }
 
@@ -293,6 +296,9 @@ func TestAacgSearchHandler(t *testing.T) {
 func TestAacgArticleHandler(t *testing.T) {
 	upstream, paths := aacgTestUpstream(t, map[string]string{
 		"/archives/11/": aacgTestArticlePage(),
+		"/archives/12/": aacgTestPage(`<div id="post" role="main"><article itemscope itemtype="https://schema.org/BlogPosting">` +
+			aacgTestArticleHeadline +
+			`<div class="post-content" itemprop="articleBody"><p>Only paragraph.</p></div></article></div>`),
 	})
 	s := newAacgTestServer(t, upstream)
 
@@ -306,10 +312,39 @@ func TestAacgArticleHandler(t *testing.T) {
 	aacgWantString(t, body, "summary", "Fixture summary.")
 	aacgWantString(t, body, "cover_url", "https://img.example.invalid/cover.jpeg")
 	aacgWantString(t, body, "published_at", "2026-01-02T03:04:05+07:00")
-	content, _ := body["content"].(string)
-	if !strings.Contains(content, "First paragraph.") {
-		t.Fatalf("content = %q, want First paragraph.", content)
+	aacgWantString(t, body, "content", "First paragraph.\n\nSee later post for details.")
+	parts, ok := body["content_parts"].([]any)
+	if !ok || len(parts) != 4 {
+		t.Fatalf("content_parts = %v, want 4 entries", body["content_parts"])
 	}
+	textPart, _ := parts[0].(map[string]any)
+	aacgWantString(t, textPart, "text", "First paragraph.\n\nSee ")
+	aacgWantString(t, textPart, "url", "")
+	aacgWantString(t, textPart, "image_url", "")
+	linkPart, _ := parts[1].(map[string]any)
+	aacgWantString(t, linkPart, "text", "later post")
+	aacgWantString(t, linkPart, "url", upstream.URL+"/archives/12/")
+	aacgWantString(t, linkPart, "image_url", "")
+	tailPart, _ := parts[2].(map[string]any)
+	aacgWantString(t, tailPart, "text", " for details.")
+	aacgWantString(t, tailPart, "url", "")
+	aacgWantString(t, tailPart, "image_url", "")
+	imagePart, _ := parts[3].(map[string]any)
+	aacgWantString(t, imagePart, "text", "")
+	aacgWantString(t, imagePart, "url", "")
+	aacgWantString(t, imagePart, "image_url", "https://pic.example.invalid/body.jpeg")
+	prev, ok := body["prev"].(map[string]any)
+	if !ok {
+		t.Fatalf("prev = %v, want object", body["prev"])
+	}
+	aacgWantString(t, prev, "title", "Earlier post")
+	aacgWantString(t, prev, "url", upstream.URL+"/archives/9/")
+	next, ok := body["next"].(map[string]any)
+	if !ok {
+		t.Fatalf("next = %v, want object", body["next"])
+	}
+	aacgWantString(t, next, "title", "Later entry")
+	aacgWantString(t, next, "url", upstream.URL+"/archives/21/")
 	videos, ok := body["videos"].([]any)
 	if !ok || len(videos) != 1 {
 		t.Fatalf("videos = %v, want 1 entry", body["videos"])
@@ -324,6 +359,17 @@ func TestAacgArticleHandler(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("missing url status = %d, want 400", code)
 	}
+
+	// 旧文章模板无 post-near：键仍在，值为 null。
+	code, body = aacgGetJSON(t, s.handleAacgArticle, "/api/aacg/article?"+url.Values{"url": {upstream.URL + "/archives/12/"}}.Encode())
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", code, body)
+	}
+	aacgWantString(t, body, "content", "Only paragraph.")
+	if body["prev"] != nil || body["next"] != nil {
+		t.Fatalf("prev/next = %v/%v, want null/null", body["prev"], body["next"])
+	}
+	aacgWantPaths(t, paths(), "/archives/11/", "/archives/12/")
 }
 
 // aacgTestEncryptImage 复刻站点图片混淆（AES-128-CBC + PKCS7），供代理解密测试用。

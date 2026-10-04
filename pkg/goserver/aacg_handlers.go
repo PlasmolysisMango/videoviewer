@@ -230,6 +230,14 @@ func aacgListJSON(list aacg.ArticleList) map[string]any {
 }
 
 func aacgArticleJSON(detail aacg.ArticleDetail) map[string]any {
+	parts := make([]map[string]any, 0, len(detail.ContentParts))
+	for _, p := range detail.ContentParts {
+		parts = append(parts, map[string]any{
+			"text":      p.Text,
+			"url":       p.URL,
+			"image_url": p.ImageURL,
+		})
+	}
 	videos := make([]map[string]any, 0, len(detail.Videos))
 	for _, v := range detail.Videos {
 		videos = append(videos, map[string]any{
@@ -240,6 +248,17 @@ func aacgArticleJSON(detail aacg.ArticleDetail) map[string]any {
 	}
 	payload := aacgItemJSON(detail.ArticleSummary)
 	payload["content"] = detail.Content
+	payload["content_parts"] = parts
 	payload["videos"] = videos
+	payload["prev"] = aacgArticleLinkJSON(detail.Previous)
+	payload["next"] = aacgArticleLinkJSON(detail.Next)
 	return payload
+}
+
+// aacgArticleLinkJSON renders footer navigation; nil (no such link) stays JSON null.
+func aacgArticleLinkJSON(link *aacg.ArticleLink) any {
+	if link == nil {
+		return nil
+	}
+	return map[string]any{"title": link.Title, "url": link.URL}
 }
