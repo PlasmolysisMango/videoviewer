@@ -261,6 +261,9 @@ func (s *Server) Start() error {
 	// HLS relay: rewrite playlist & stream segments so browsers (no Referer control)
 	// can play Referer-gated CDNs like surrit
 	mux.HandleFunc("GET /api/hls/playlist", s.handleHlsPlaylist)
+	// ExoPlayer(media3) 按 URL 末段后缀识别容器类型：须以 .m3u8 结尾才会走 HLS 解析，
+	// 否则按渐进媒体解析 m3u8 文本必然 Source error（旧路径保留兼容 Web 端 hls.js）。
+	mux.HandleFunc("GET /api/hls/playlist.m3u8", s.handleHlsPlaylist)
 	mux.HandleFunc("GET /api/hls/segment", s.handleHlsSegment)
 	// AACG 专栏（镜像自动发现，30 分钟目标缓存）
 	mux.HandleFunc("GET /api/aacg/home", s.handleAacgHome)

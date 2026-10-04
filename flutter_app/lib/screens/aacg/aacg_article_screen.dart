@@ -166,10 +166,12 @@ class _AacgArticleScreenState extends State<AacgArticleScreen> {
 
   /// 原生播放器统一经本机 HLS 代理取流（站点 CDN 域名对手机侧直连不可达，
   /// 后端链路才对它们可用）；Web 端 HlsPlayerScreen 自带代理包装，无需处理。
+  /// 路径必须以 .m3u8 结尾：ExoPlayer(media3) 按 URL 后缀识别 HLS，无后缀会
+  /// 被当作渐进媒体解析而报 Source error（见 server 端 playlist.m3u8 路由）。
   String _proxyStreamUrl(String url) {
     if (kIsWeb) return url;
     final query = Uri(queryParameters: {'u': url}).query;
-    return '${BackendLauncher.baseUrl}/api/hls/playlist?$query';
+    return '${BackendLauncher.baseUrl}/api/hls/playlist.m3u8?$query';
   }
 
   void _showSnack(String message) {

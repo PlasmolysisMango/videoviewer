@@ -1312,7 +1312,14 @@ func resolveAgainst(base, ref string) string {
 // 子播放列表指向 /api/hls/playlist（需再次改写），媒体分片指向 /api/hls/segment。
 func proxyHlsURL(r *http.Request, mediaURL, referer string) string {
 	endpoint := "segment"
-	if strings.HasSuffix(strings.ToLower(mediaURL), ".m3u8") {
+	// 解析后只看路径判端点：mediaURL 常带查询串（?auth_key=…），裸串后缀检测会
+	// 漏判 .m3u8?query，把子播放列表错发到 segment 端点（内层 URI 不被改写，
+	// 播放器只会拿到未经代理的分片地址）。
+	mediaPath := mediaURL
+	if pu, err := url.Parse(mediaURL); err == nil {
+		mediaPath = pu.Path
+	}
+	if strings.HasSuffix(strings.ToLower(mediaPath), ".m3u8") {
 		endpoint = "playlist"
 	}
 	q := url.Values{}

@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -214,12 +215,30 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     } catch (e) {
       AppLogger.error('Failed to initialize video', e);
       await old?.dispose();
+      final detail = await _diagnoseProxyFailure(stream.url);
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _error = detail == null ? e.toString() : '${e.toString()}\n$detail';
           _loading = false;
         });
       }
+    }
+  }
+
+  /// 初始化失败时对播放地址做一次自检重取（仅本机 HLS 中继地址）：ExoPlayer
+  /// 只给 "Source error"，无法区分上游取流失败与其它原因；把自检得到的 HTTP
+  /// 状态与正文前缀（折叠查询串脱敏）拼进错误文案，便于在手机上定位断点。
+  Future<String?> _diagnoseProxyFailure(String url) async {
+    if (!url.contains('/api/hls/')) return null;
+    try {
+      final resp =
+          await http.get(Uri.parse(url)).timeout(const Duration(seconds: 8));
+      var head = resp.body;
+      if (head.length > 120) head = head.substring(0, 120);
+      head = head.replaceAll(RegExp(r'\?[^ "\r\n]*'), r'?…').trim();
+      return '自检 HTTP ${resp.statusCode} ${head.isEmpty ? '(空正文)' : head}';
+    } catch (err) {
+      return '自检失败: $err';
     }
   }
 
