@@ -1332,7 +1332,8 @@ func proxyHlsURL(r *http.Request, mediaURL, referer string) string {
 
 // fetchMedia 带浏览器 UA 与 Referer/Origin 请求上游媒体资源（经配置的代理）。
 // surrit 等 CDN 强制校验 Referer，而浏览器无法伪造该头，因此必须由后端转发。
-func (s *Server) fetchMedia(ctx context.Context, u, referer string) (*http.Response, error) {
+// rangeHdr 非空时原样转发 Range 头（BYTERANGE 分片 / 断点续传）。
+func (s *Server) fetchMedia(ctx context.Context, u, referer, rangeHdr string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -1345,11 +1346,14 @@ func (s *Server) fetchMedia(ctx context.Context, u, referer string) (*http.Respo
 			req.Header.Set("Origin", ru.Scheme+"://"+ru.Host)
 		}
 	}
+	if rangeHdr != "" {
+		req.Header.Set("Range", rangeHdr)
+	}
 	return s.imgClient.Do(req)
 }
 
 // hlsFetchFunc 取回上游媒体资源；referer 仅静态白名单链路使用（surrit 等防盗链）。
-type hlsFetchFunc func(ctx context.Context, u, referer string) (*http.Response, error)
+type hlsFetchFunc func(ctx context.Context, u, referer, rangeHdr string) (*http.Response, error)
 
 // hlsFetcher 校验媒体 URL 并选择抓取链路：静态白名单主机走通用 fetchMedia，
 // AACG 动态注册主机走 aacg 客户端网络栈（与文章/封面同链路）。校验失败时
@@ -1368,8 +1372,8 @@ func (s *Server) hlsFetcher(w http.ResponseWriter, raw string) (hlsFetchFunc, bo
 			writeError(w, http.StatusServiceUnavailable, "aacg client unavailable")
 			return nil, false
 		}
-		return func(ctx context.Context, u, _ string) (*http.Response, error) {
-			return s.aacg.Fetch(ctx, u)
+		return func(ctx context.Context, u, _, rangeHdr string) (*http.Response, error) {
+			return s.aacg.FetchRange(ctx, u, rangeHdr)
 		}, true
 	}
 	writeError(w, http.StatusForbidden, "host not allowed")
@@ -1386,7 +1390,7 @@ func (s *Server) handleHlsPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := fetch(r.Context(), u, referer)
+	resp, err := fetch(r.Context(), u, referer, "")
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "fetch playlist: "+err.Error())
 		return
@@ -1442,6 +1446,7 @@ func (s *Server) handleHlsPlaylist(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleHlsSegment 流式转发媒体分片（.ts / init 段 / 子资源），带上游 Referer。
+// 客户端 Range 头原样转发，206/Content-Range 原样回传（BYTERANGE 分片依赖）。
 func (s *Server) handleHlsSegment(w http.ResponseWriter, r *http.Request) {
 	u := r.URL.Query().Get("u")
 	referer := r.URL.Query().Get("ref")
@@ -1450,7 +1455,7 @@ func (s *Server) handleHlsSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := fetch(r.Context(), u, referer)
+	resp, err := fetch(r.Context(), u, referer, r.Header.Get("Range"))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "fetch segment: "+err.Error())
 		return
@@ -1463,6 +1468,11 @@ func (s *Server) handleHlsSegment(w http.ResponseWriter, r *http.Request) {
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
+	}
+	for _, h := range []string{"Content-Range", "Content-Length", "Accept-Ranges"} {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
+		}
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)

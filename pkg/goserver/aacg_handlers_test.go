@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -241,6 +242,31 @@ func aacgWantNum(t *testing.T, body map[string]any, key string, want float64) {
 	}
 }
 
+// aacgWantStrings 断言 body[key] 是恰好等于 want（顺序一致）的字符串数组。
+func aacgWantStrings(t *testing.T, body map[string]any, key string, want ...string) {
+	t.Helper()
+	raw, ok := body[key].([]any)
+	if !ok {
+		t.Fatalf("%s = %v, want array", key, body[key])
+	}
+	got := make([]string, 0, len(raw))
+	for _, v := range raw {
+		str, ok := v.(string)
+		if !ok {
+			t.Fatalf("%s item = %v, want string", key, v)
+		}
+		got = append(got, str)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s = %v, want %v", key, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s = %v, want %v", key, got, want)
+		}
+	}
+}
+
 func aacgWantItems(t *testing.T, body map[string]any, want int) []map[string]any {
 	t.Helper()
 	raw, ok := body["items"].([]any)
@@ -270,6 +296,18 @@ func aacgWantPaths(t *testing.T, got []string, want ...string) {
 		if got[i] != want[i] {
 			t.Fatalf("requests = %v, want %v", got, want)
 		}
+	}
+}
+
+// aacgWantPathSet 与 aacgWantPaths 相同但忽略请求顺序（并行探测下顺序不定）。
+func aacgWantPathSet(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	g := append([]string(nil), got...)
+	w := append([]string(nil), want...)
+	sort.Strings(g)
+	sort.Strings(w)
+	if !reflect.DeepEqual(g, w) {
+		t.Fatalf("requests = %v, want %v (any order)", got, want)
 	}
 }
 
@@ -545,6 +583,13 @@ func TestAacgHlsProxy(t *testing.T) {
 			fmt.Fprint(w, playlistBody)
 		case "/media/seg1.ts":
 			w.Header().Set("Content-Type", "video/mp2t")
+			if rng := r.Header.Get("Range"); rng != "" {
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes 1-4/%d", len(segmentBody)))
+				w.WriteHeader(http.StatusPartialContent)
+				fmt.Fprint(w, segmentBody[1:5])
+				return
+			}
 			fmt.Fprint(w, segmentBody)
 		default:
 			t.Errorf("unexpected upstream request: %s", r.URL.Path)
@@ -605,6 +650,25 @@ func TestAacgHlsProxy(t *testing.T) {
 		t.Fatalf("segment Content-Type = %q", ct)
 	}
 
+	// 客户端 Range 原样转发上游，206/Content-Range/Accept-Ranges 原样回传
+	// （EXT-X-BYTERANGE 与断点续传依赖；上游只有收到 Range 才回 206）。
+	rangeReq := httptest.NewRequest(http.MethodGet, seg.String(), nil)
+	rangeReq.Header.Set("Range", "bytes=1-4")
+	rec = httptest.NewRecorder()
+	s.handleHlsSegment(rec, rangeReq)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("range segment status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	if cr := rec.Header().Get("Content-Range"); cr != fmt.Sprintf("bytes 1-4/%d", len(segmentBody)) {
+		t.Fatalf("Content-Range = %q", cr)
+	}
+	if ar := rec.Header().Get("Accept-Ranges"); ar != "bytes" {
+		t.Fatalf("Accept-Ranges = %q", ar)
+	}
+	if rec.Body.String() != segmentBody[1:5] {
+		t.Fatalf("range segment body = %q, want %q", rec.Body.String(), segmentBody[1:5])
+	}
+
 	// 未注册主机仍是 403；非法 scheme 仍是 400。
 	rec = httptest.NewRecorder()
 	s.handleHlsPlaylist(rec, httptest.NewRequest(http.MethodGet, "/api/hls/playlist?"+url.Values{"u": {"https://unregistered.example.invalid/x.m3u8"}}.Encode(), nil))
@@ -618,35 +682,46 @@ func TestAacgHlsProxy(t *testing.T) {
 	}
 }
 
-// probe：播放前动态选源的判定链（注册主机 + 200 + #EXTM3U），只回判定结果。
+// probe：播放前动态选源的两阶段判定链（播放列表 + 分片级深度验证），
+// 恒 200 只回判定结果，不代理内容。
 func TestAacgProbeHandler(t *testing.T) {
 	upstream, paths := aacgTestUpstream(t, map[string]string{
-		"/good.m3u8":  "#EXTM3U\n#EXT-X-ENDLIST\n",
-		"/plain.html": "<html>not a playlist</html>",
+		"/media/good.m3u8": "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg1.ts\n#EXT-X-ENDLIST\n",
+		"/media/seg1.ts":   "\x47fixture-ts",
+		"/dead/list.m3u8":  "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\ngone.ts\n#EXT-X-ENDLIST\n",
+		"/plain.html":      "<html>not a playlist</html>",
 	})
 	s := newAacgTestServer(t, upstream)
 	s.registerAacgMediaHosts("127.0.0.1")
-	good := upstream.URL + "/good.m3u8"
+	good := upstream.URL + "/media/good.m3u8"
 	missing := upstream.URL + "/missing.m3u8"
 	plain := upstream.URL + "/plain.html"
+	playlistOnly := upstream.URL + "/dead/list.m3u8"
 
-	// 首个 404、次个 200+#EXTM3U → 返回次者（恒 200；顺序即候选优先级）。
-	target := "/api/aacg/probe?" + url.Values{"url": {missing, good}}.Encode()
+	// 完播候选（分片可取）进 urls 与 playable；仅播放列表可用的候选（首分片
+	// 404）只进 urls 且殿后。恒 200；并行探测，请求顺序不定，故按集合比较。
+	target := "/api/aacg/probe?" + url.Values{"url": {missing, playlistOnly, good}}.Encode()
 	code, body := aacgGetJSON(t, s.handleAacgProbe, target)
 	if code != http.StatusOK {
 		t.Fatalf("probe status = %d, body = %v", code, body)
 	}
 	aacgWantString(t, body, "url", good)
-	aacgWantPaths(t, paths(), "/missing.m3u8", "/good.m3u8")
+	aacgWantStrings(t, body, "urls", good, playlistOnly)
+	aacgWantStrings(t, body, "playable", good)
+	aacgWantPathSet(t, paths(),
+		"/missing.m3u8", "/dead/list.m3u8", "/dead/gone.ts", "/media/good.m3u8", "/media/seg1.ts")
 
-	// 非播放列表正文 / 未注册主机 / 非法 URL → 空串（候选不发出请求）。
+	// 非播放列表正文 / 未注册主机 / 非法 URL → 空串与空数组（后两者不发出请求）。
 	target = "/api/aacg/probe?" + url.Values{"url": {plain, "https://unregistered.example.invalid/x.m3u8", "file:///etc/passwd"}}.Encode()
 	code, body = aacgGetJSON(t, s.handleAacgProbe, target)
 	if code != http.StatusOK {
 		t.Fatalf("probe status = %d, body = %v", code, body)
 	}
 	aacgWantString(t, body, "url", "")
-	aacgWantPaths(t, paths(), "/missing.m3u8", "/good.m3u8", "/plain.html")
+	aacgWantStrings(t, body, "urls")
+	aacgWantStrings(t, body, "playable")
+	aacgWantPathSet(t, paths(),
+		"/missing.m3u8", "/dead/list.m3u8", "/dead/gone.ts", "/media/good.m3u8", "/media/seg1.ts", "/plain.html")
 
 	// 参数个数校验：0 个或超过 4 个 → 400。
 	if code, _ = aacgGetJSON(t, s.handleAacgProbe, "/api/aacg/probe"); code != http.StatusBadRequest {
@@ -655,6 +730,83 @@ func TestAacgProbeHandler(t *testing.T) {
 	many := "/api/aacg/probe?" + url.Values{"url": {good, good, good, good, good}}.Encode()
 	if code, _ = aacgGetJSON(t, s.handleAacgProbe, many); code != http.StatusBadRequest {
 		t.Fatalf("too-many status = %d, want 400", code)
+	}
+}
+
+// 深度阶段细节：master 下钻最高码率变体、key 请求形态、BYTERANGE 精确
+// Range 头、gzip 无关的轻量读取；key 不可达时降级为仅播放列表可用。
+func TestAacgProbeHandlerDeep(t *testing.T) {
+	var mu sync.Mutex
+	ranges := map[string]string{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ranges[r.URL.Path] = r.Header.Get("Range")
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/mas.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480\nlo.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5600000,RESOLUTION=1920x1080\nhi.m3u8\n")
+		case "/hi.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nhi-0.ts\n#EXT-X-ENDLIST\n")
+		case "/hi-0.ts":
+			fmt.Fprint(w, "\x47hi")
+		case "/lo.m3u8":
+			t.Error("probe should descend to the highest-bandwidth variant only")
+			http.NotFound(w, r)
+		case "/enc/list.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:10.0,\ne-0.ts\n#EXT-X-ENDLIST\n")
+		case "/enc/k.bin":
+			fmt.Fprint(w, "\x01\x02\x03\x04")
+		case "/enc/e-0.ts":
+			fmt.Fprint(w, "\x47enc")
+		case "/encdead/list.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:10.0,\ne-0.ts\n#EXT-X-ENDLIST\n")
+		case "/encdead/k.bin":
+			http.NotFound(w, r)
+		case "/encdead/e-0.ts":
+			fmt.Fprint(w, "\x47enc")
+		case "/br/list.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-BYTERANGE:100@10\n#EXTINF:10.0,\nb-0.ts\n#EXT-X-ENDLIST\n")
+		case "/br/b-0.ts":
+			fmt.Fprint(w, "\x47br")
+		default:
+			t.Errorf("unexpected upstream request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	s := newAacgTestServer(t, upstream)
+	s.registerAacgMediaHosts("127.0.0.1")
+
+	mas := upstream.URL + "/mas.m3u8"
+	enc := upstream.URL + "/enc/list.m3u8"
+	encDead := upstream.URL + "/encdead/list.m3u8"
+	br := upstream.URL + "/br/list.m3u8"
+
+	target := "/api/aacg/probe?" + url.Values{"url": {mas, enc, encDead, br}}.Encode()
+	code, body := aacgGetJSON(t, s.handleAacgProbe, target)
+	if code != http.StatusOK {
+		t.Fatalf("probe status = %d, body = %v", code, body)
+	}
+	aacgWantString(t, body, "url", mas)
+	aacgWantStrings(t, body, "urls", mas, enc, br, encDead)
+	aacgWantStrings(t, body, "playable", mas, enc, br)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := ranges["/hi-0.ts"]; got != "bytes=0-1023" {
+		t.Fatalf("variant segment Range = %q, want bytes=0-1023", got)
+	}
+	if got := ranges["/br/b-0.ts"]; got != "bytes=10-109" {
+		t.Fatalf("byterange segment Range = %q, want bytes=10-109", got)
+	}
+	if got := ranges["/enc/k.bin"]; got != "" {
+		t.Fatalf("key Range = %q, want none (small full fetch)", got)
+	}
+	if _, hit := ranges["/encdead/k.bin"]; !hit {
+		t.Fatal("dead key was not requested")
+	}
+	if _, hit := ranges["/lo.m3u8"]; hit {
+		t.Fatal("low-bandwidth variant fetched, want highest only")
 	}
 }
 

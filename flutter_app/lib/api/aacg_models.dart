@@ -196,3 +196,13 @@ class AacgArticleDetail {
     };
   }
 }
+
+/// 播放前选源探测结果：urls 为播放列表级可用地址（深度验证通过者在前，
+/// 首项即默认播放源）；playable 为分片级深度验证通过的子集——这些源在
+/// 当前网络不经代理即可真正取到媒体数据。
+class AacgProbeResult {
+  final List<String> urls;
+  final List<String> playable;
+
+  const AacgProbeResult({required this.urls, required this.playable});
+}

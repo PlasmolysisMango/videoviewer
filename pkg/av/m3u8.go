@@ -20,6 +20,12 @@ var (
 	bandwidthRe    = regexp.MustCompile(`BANDWIDTH=(\d+)`)
 	resolutionRe   = regexp.MustCompile(`RESOLUTION=(\d+x\d+)`)
 	keyRe          = regexp.MustCompile(`#EXT-X-KEY:`)
+
+	// FirstMediaTargets 用：EXT-X-KEY 的 METHOD 与 URI 属性、EXT-X-BYTERANGE
+	// 的值形态（len[@off]）。
+	keyMethodRe = regexp.MustCompile(`METHOD=([A-Z0-9-]+)`)
+	uriAttrRe   = regexp.MustCompile(`URI="([^"]+)"`)
+	byteRangeRe = regexp.MustCompile(`^(\d+)(?:@(\d+))?$`)
 )
 
 // ParseMasterPlaylist 解析 HLS 主播放列表，返回其中的多路码率流。
@@ -121,6 +127,75 @@ func parseMediaSegments(content, baseURL string) (segs []segmentRef, encrypted b
 		idx++
 	}
 	return segs, encrypted
+}
+
+// MediaProbe 描述媒体播放列表中首分片的探测目标：key/map 资源与首分片本身，
+// 供播放前深度验证「该源在当前网络能否真正取到数据」。
+type MediaProbe struct {
+	KeyURI   string // EXT-X-KEY（METHOD != NONE）的 URI
+	MapURI   string // EXT-X-MAP 初始化段 URI
+	SegURI   string // 首个媒体分片 URI
+	SegRange string // EXT-X-BYTERANGE 对应的精确 Range 头值（无则空）
+}
+
+// FirstMediaTargets 从媒体播放列表提取首分片的探测目标：EXT-X-KEY（METHOD
+// 非 NONE）与 EXT-X-MAP 的 URI、首个分片及其 EXT-X-BYTERANGE 精确 Range
+// （首分片缺省偏移 0）。无分片返回 false；调用方须先用 ParseMasterPlaylist
+// 排除主列表（master 的变体 URI 会被误当作分片）。
+func FirstMediaTargets(content, baseURL string) (MediaProbe, bool) {
+	var keyURI, mapURI, segRange string
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			switch {
+			case strings.HasPrefix(line, "#EXT-X-KEY:"):
+				// 取「最近一次」密钥声明：METHOD=NONE 表示首分片为明文。
+				keyURI = ""
+				if m := keyMethodRe.FindStringSubmatch(line); m != nil && m[1] != "NONE" {
+					if um := uriAttrRe.FindStringSubmatch(line); um != nil {
+						keyURI = resolveURI(baseURL, um[1])
+					}
+				}
+			case strings.HasPrefix(line, "#EXT-X-MAP:"):
+				if m := uriAttrRe.FindStringSubmatch(line); m != nil {
+					mapURI = resolveURI(baseURL, m[1])
+				}
+			case strings.HasPrefix(line, "#EXT-X-BYTERANGE:"):
+				segRange = byteRangeHeader(strings.TrimPrefix(line, "#EXT-X-BYTERANGE:"))
+			}
+			continue
+		}
+		return MediaProbe{
+			KeyURI:   keyURI,
+			MapURI:   mapURI,
+			SegURI:   resolveURI(baseURL, line),
+			SegRange: segRange,
+		}, true
+	}
+	return MediaProbe{}, false
+}
+
+// byteRangeHeader 把 EXT-X-BYTERANGE 的值（len[@off]）转成请求用的 Range 头
+// 值；非法值返回空串（按无 BYTERANGE 处理）。
+func byteRangeHeader(attr string) string {
+	m := byteRangeRe.FindStringSubmatch(strings.TrimSpace(attr))
+	if m == nil {
+		return ""
+	}
+	length, _ := strconv.ParseInt(m[1], 10, 64)
+	var offset int64
+	if m[2] != "" {
+		offset, _ = strconv.ParseInt(m[2], 10, 64)
+	}
+	if length <= 0 || offset < 0 {
+		return ""
+	}
+	return fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
 }
 
 // DownloadStream 下载一路 HLS 流到 dst，并发拉取分片并按序号流式写入

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,14 @@ func liveRedact(raw string) string {
 		return "<unparsable>"
 	}
 	return u.Scheme + "://" + u.Host + u.Path
+}
+
+// liveScrubText 折叠任意文本中的查询串：上游错误信息可能内嵌含 auth_key
+// 的完整 URL，凡打印响应正文处都须先经此函数。
+var liveQueryRe = regexp.MustCompile(`\?[^ "\r\n]*`)
+
+func liveScrubText(s string) string {
+	return liveQueryRe.ReplaceAllString(s, "?…")
 }
 
 // liveRedactProxy 展示本代理 URL 时把 u 参数里的上游地址折叠为脱敏形式。
@@ -140,13 +149,26 @@ func liveCheckHlsChain(t *testing.T, s *Server, ctx context.Context, label, usab
 	t.Logf("[%s] step1: playlist-host=%s status=%d bytes=%d elapsed=%s",
 		label, hostOf(usable), rr.Code, rr.Body.Len(), time.Since(stepStart).Round(time.Millisecond))
 	if rr.Code != http.StatusOK {
-		t.Errorf("[%s] step1 non-200: %s", label, strings.TrimSpace(rr.Body.String()))
+		t.Errorf("[%s] step1 non-200: %s", label, strings.TrimSpace(liveScrubText(rr.Body.String())))
 		return false
 	}
 	body := rr.Body.String()
 	shape := "media"
 	if strings.Contains(body, "#EXT-X-STREAM-INF") {
 		shape = "master"
+	}
+	// 记录播放列表形态：byterange/key/map 关系到播放器能否在分片层取到数据
+	// （EXT-X-BYTERANGE 依赖 Range 透传，EXT-X-KEY 需要密钥经代理可取）。
+	var feats []string
+	for _, f := range []struct{ tag, name string }{
+		{"#EXT-X-BYTERANGE", "byterange"},
+		{"#EXT-X-KEY", "key"},
+		{"#EXT-X-MAP", "map"},
+		{"#EXT-X-ENDLIST", "vod"},
+	} {
+		if strings.Contains(body, f.tag) {
+			feats = append(feats, f.name)
+		}
 	}
 	children := liveProxyChildren(t, body)
 	segChildren, plChildren, withQuery := 0, 0, 0
@@ -160,8 +182,8 @@ func liveCheckHlsChain(t *testing.T, s *Server, ctx context.Context, label, usab
 			withQuery++
 		}
 	}
-	t.Logf("[%s] step1 shape=%s children=%d (segment=%d playlist=%d with-query=%d)",
-		label, shape, len(children), segChildren, plChildren, withQuery)
+	t.Logf("[%s] step1 shape=%s children=%d (segment=%d playlist=%d with-query=%d) feats=%s",
+		label, shape, len(children), segChildren, plChildren, withQuery, strings.Join(feats, ","))
 
 	ok := true
 	followed := 0
@@ -172,7 +194,9 @@ func liveCheckHlsChain(t *testing.T, s *Server, ctx context.Context, label, usab
 		followed++
 		endpoint := liveProxyEndpoint(child)
 		upstream := liveProxyUpstream(child)
+		childStart := time.Now()
 		rrChild := s.liveProxyGet(t, ctx, child)
+		childElapsed := time.Since(childStart)
 		childBody := rrChild.Body.Bytes()
 		isPlaylist := liveIsPlaylist(childBody)
 		head := childBody
@@ -180,9 +204,9 @@ func liveCheckHlsChain(t *testing.T, s *Server, ctx context.Context, label, usab
 			head = head[:12]
 		}
 		if verbose || isPlaylist || rrChild.Code != http.StatusOK {
-			t.Logf("[%s] child: endpoint=%s upstream-host=%s status=%d ct=%q bytes=%d head=%s suffix-m3u8=%t",
+			t.Logf("[%s] child: endpoint=%s upstream-host=%s status=%d ct=%q bytes=%d elapsed=%s head=%s suffix-m3u8=%t",
 				label, endpoint, hostOf(upstream), rrChild.Code, rrChild.Header().Get("Content-Type"),
-				len(childBody), hex.EncodeToString(head), strings.HasSuffix(strings.ToLower(liveRedact(upstream)), ".m3u8"))
+				len(childBody), childElapsed.Round(time.Millisecond), hex.EncodeToString(head), strings.HasSuffix(strings.ToLower(liveRedact(upstream)), ".m3u8"))
 		}
 		if endpoint == "segment" && isPlaylist {
 			// 路由错误（主证据）：上游是 playlist 却走 segment 端点。
@@ -198,7 +222,7 @@ func liveCheckHlsChain(t *testing.T, s *Server, ctx context.Context, label, usab
 		}
 		if endpoint == "segment" && rrChild.Code != http.StatusOK {
 			ok = false
-			t.Errorf("[%s] segment fetch failed: %s -> %d %s", label, liveRedact(upstream), rrChild.Code, strings.TrimSpace(string(childBody)))
+			t.Errorf("[%s] segment fetch failed: %s -> %d %s", label, liveRedact(upstream), rrChild.Code, strings.TrimSpace(liveScrubText(string(childBody))))
 			continue
 		}
 		if endpoint == "playlist" && isPlaylist {
@@ -284,15 +308,27 @@ func TestLiveHlsProxyChain(t *testing.T) {
 		t.Fatal("no usable target")
 	}
 
-	feed, err := c.Feed(ctx, target.URL, 1)
-	if err != nil {
-		t.Fatalf("feed: %v", err)
+	// 默认扫首页；AACG_SEARCH_Q 提供时改扫搜索结果（按关键词复现特定帖子的
+	// 播放问题）。每条文章的所有视频都跑一遍链路，上限 8 条视频。
+	var items []aacg.ArticleSummary
+	if q := os.Getenv("AACG_SEARCH_Q"); q != "" {
+		list, serr := c.Search(ctx, target.URL, q, 1)
+		if serr != nil {
+			t.Fatalf("search %q: %v", q, serr)
+		}
+		items = list.Items
+		t.Logf("search %q: %d items", q, len(items))
+	} else {
+		feed, ferr := c.Feed(ctx, target.URL, 1)
+		if ferr != nil {
+			t.Fatalf("feed: %v", ferr)
+		}
+		items = feed.Items
 	}
 
-	// 扫首页前几条文章；每条文章的所有视频都跑一遍链路，上限 8 条视频。
 	const maxChains = 8
 	checked := 0
-	for i, item := range feed.Items {
+	for i, item := range items {
 		if i >= 12 || checked >= maxChains {
 			break
 		}
@@ -309,9 +345,15 @@ func TestLiveHlsProxyChain(t *testing.T) {
 			if len(list) == 0 {
 				list = []string{video.URL}
 			}
+			// 与真实播放同栈的两阶段探测：playlist=播放列表可取，deep=key/
+			// 首分片在直连路径真正可取（菠萝啤类帖子预期 playlist=true、deep=false）。
 			usable := ""
-			for _, raw := range list {
-				if s.aacgProbeSource(ctx, raw) {
+			for ci, raw := range list {
+				probeStart := time.Now()
+				playlistOK, deepOK := s.aacgProbeDeep(ctx, raw)
+				t.Logf("article %q video[%d] cand[%d] host=%s playlist=%t deep=%t elapsed=%s",
+					item.Title, vi, ci, hostOf(raw), playlistOK, deepOK, time.Since(probeStart).Round(time.Millisecond))
+				if playlistOK {
 					usable = raw
 					break
 				}

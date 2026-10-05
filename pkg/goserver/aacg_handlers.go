@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"videoviewer/pkg/aacg"
+	"videoviewer/pkg/av"
 )
 
 // AACG 专栏（镜像自动发现 + 解析后的信息流，抓取实现见 pkg/aacg）。
@@ -374,12 +376,23 @@ func aacgVideoHosts(detail aacg.ArticleDetail) []string {
 	return hosts
 }
 
-// aacgProbeTimeout 是单个候选播放列表的探测上限（探测对象是短小主列表）。
-const aacgProbeTimeout = 8 * time.Second
+// aacgProbeTimeout / aacgDeepTimeout 分别限时探测的播放列表阶段与分片级
+// 深度阶段（key/初始化段/首分片均为轻量请求）。深度失败在真实阻断场景下
+// 约 5-6 秒显现（TLS 中断），6s 上限与之吻合。
+const (
+	aacgProbeTimeout = 8 * time.Second
+	aacgDeepTimeout  = 6 * time.Second
+)
 
-// handleAacgProbe 播放前的动态选源：按顺序逐个探测候选播放列表，返回第一个
-// 可用地址（判定与播放完全同栈：主机已注册 + HTTP 200 + 正文以 #EXTM3U 开头）；
-// 全部失败返回空串（恒 200）。只回判定结果，不代理内容，也不打印含 auth_key 的 URL。
+// handleAacgProbe 播放前的动态选源：并行对全部候选做两阶段探测——播放列表
+// （主机已注册 + HTTP 200 + 正文以 #EXTM3U 开头）与分片级深度验证（key/
+// 初始化段/首分片可取），判定与播放完全同栈。恒 200 返回
+// {"url": 首选（兼容保留）, "urls": [全部播放列表级可用，深度通过者在前],
+// "playable": [深度验证通过子集]}；全部不可用时 url 为空串、数组为空。
+// urls[0] 即「不经代理即可真正播放」的首选源，仅播放列表可用的候选殿后作
+// 备用。等齐全部候选再返回：失败语义需全体判定，成功场景各候选亚秒级；
+// 并行使最坏耗时从 N×(8s+6s) 收敛到 ~8s。只回判定结果，不代理内容，也不
+// 打印含 auth_key 的 URL。
 func (s *Server) handleAacgProbe(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAacg(w) {
 		return
@@ -389,38 +402,152 @@ func (s *Server) handleAacgProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "1-4 url parameters required")
 		return
 	}
-	usable := ""
-	for _, raw := range candidates {
-		if s.aacgProbeSource(r.Context(), raw) {
-			usable = raw
-			break
+	type aacgVerdict struct{ playlist, deep bool }
+	verdicts := make([]aacgVerdict, len(candidates))
+	var wg sync.WaitGroup
+	for i, raw := range candidates {
+		wg.Add(1)
+		go func(i int, raw string) {
+			defer wg.Done()
+			p, d := s.aacgProbeDeep(r.Context(), raw)
+			verdicts[i] = aacgVerdict{playlist: p, deep: d}
+		}(i, raw)
+	}
+	wg.Wait()
+
+	urls := []string{}
+	playable := []string{}
+	for i, v := range verdicts {
+		if v.deep {
+			playable = append(playable, candidates[i])
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": usable})
+	urls = append(urls, playable...)
+	for i, v := range verdicts {
+		if v.playlist && !v.deep {
+			urls = append(urls, candidates[i])
+		}
+	}
+	first := ""
+	if len(urls) > 0 {
+		first = urls[0]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": first, "urls": urls, "playable": playable})
 }
 
-func (s *Server) aacgProbeSource(ctx context.Context, raw string) bool {
+// aacgFetchPlaylist 拉取并校验一个候选播放列表：URL/主机合法、HTTP 200、正文
+// 以 #EXTM3U 开头；返回完整正文（播放列表很小，读取上限 1MB）。限时
+// aacgProbeTimeout，单次尝试。
+func (s *Server) aacgFetchPlaylist(ctx context.Context, raw string) ([]byte, bool) {
 	pu, err := url.Parse(raw)
 	if err != nil || (pu.Scheme != "http" && pu.Scheme != "https") || !s.aacgMediaHostAllowed(pu.Hostname()) {
-		return false
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(ctx, aacgProbeTimeout)
 	defer cancel()
 	resp, err := s.aacg.Fetch(ctx, raw)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return nil, false
 	}
-	head, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, false
+	}
+	if !bytes.HasPrefix(body, []byte("#EXTM3U")) {
+		return nil, false
+	}
+	return body, true
+}
+
+// aacgProbeSource 播放列表级探测（实网诊断与兼容保留）。
+func (s *Server) aacgProbeSource(ctx context.Context, raw string) bool {
+	_, ok := s.aacgFetchPlaylist(ctx, raw)
+	return ok
+}
+
+// aacgProbeDeep 对单个候选做两阶段深度验证：播放列表可取后，进一步确认
+// key（若有）/初始化段（若有）/首分片在当前网络真正可取——这些资源常与
+// 播放列表分属不同 CDN 域名，播放列表可达不代表能播放。主列表下钻一层取
+// 最高码率变体；变体仍为 master、无可解析分片、任一目标失败/超时均
+// deepOK=false（仅播放列表可用）。网络错误不重试：确定性的阻断（如 TLS
+// 被重置）重试只会放大等待；上游对 Range 返回 3xx 按不可用判，与播放代理
+// 链路（传输层不跟随重定向）行为一致。
+func (s *Server) aacgProbeDeep(ctx context.Context, raw string) (playlistOK, deepOK bool) {
+	// 播放列表阶段整体限时 aacgProbeTimeout（master 下钻的两跳共享预算）。
+	listCtx, cancelList := context.WithTimeout(ctx, aacgProbeTimeout)
+	defer cancelList()
+	body, ok := s.aacgFetchPlaylist(listCtx, raw)
+	if !ok {
+		return false, false
+	}
+	base := raw
+	if variants := av.ParseMasterPlaylist(string(body), raw); variants != nil {
+		best := variants[len(variants)-1] // 已按带宽升序，末位即最高
+		body, ok = s.aacgFetchPlaylist(listCtx, best.URL)
+		if !ok || av.ParseMasterPlaylist(string(body), best.URL) != nil {
+			return true, false
+		}
+		base = best.URL
+	}
+	targets, ok := av.FirstMediaTargets(string(body), base)
+	if !ok {
+		return true, false
+	}
+
+	type probeCheck struct {
+		uri string
+		rng string // 空串表示不带 Range（key 是几十字节的小文件）
+	}
+	var checks []probeCheck
+	if targets.KeyURI != "" {
+		checks = append(checks, probeCheck{uri: targets.KeyURI})
+	}
+	if targets.MapURI != "" {
+		checks = append(checks, probeCheck{uri: targets.MapURI, rng: "bytes=0-1023"})
+	}
+	segRange := targets.SegRange
+	if segRange == "" {
+		segRange = "bytes=0-1023"
+	}
+	checks = append(checks, probeCheck{uri: targets.SegURI, rng: segRange})
+
+	deepCtx, cancel := context.WithTimeout(ctx, aacgDeepTimeout)
+	defer cancel()
+	results := make([]bool, len(checks))
+	var wg sync.WaitGroup
+	for i, c := range checks {
+		wg.Add(1)
+		go func(i int, c probeCheck) {
+			defer wg.Done()
+			results[i] = s.aacgProbeResource(deepCtx, c.uri, c.rng)
+		}(i, c)
+	}
+	wg.Wait()
+	for _, ok := range results {
+		if !ok {
+			return true, false
+		}
+	}
+	return true, true
+}
+
+// aacgProbeResource 轻量验证单个媒体资源可取：200/206 且能读到 ≥1 字节；
+// 只读前 4KB 即关闭，探测不整段下载。
+func (s *Server) aacgProbeResource(ctx context.Context, raw, rangeHdr string) bool {
+	resp, err := s.aacg.FetchRange(ctx, raw, rangeHdr)
 	if err != nil {
 		return false
 	}
-	usable := bytes.HasPrefix(head, []byte("#EXTM3U"))
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<20))
-	return usable
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return false
+	}
+	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	return err == nil && n > 0
 }
 
 func aacgItemJSON(item aacg.ArticleSummary) map[string]any {

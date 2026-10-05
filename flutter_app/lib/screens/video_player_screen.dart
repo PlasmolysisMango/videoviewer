@@ -36,6 +36,10 @@ class VideoPlayerScreen extends StatefulWidget {
   final List<VideoStream> streams;
   final String title;
 
+  /// 当前片源的备用地址（同内容不同 CDN，调用方已探活）：当前片源初始化
+  /// 失败时按序自动切换，成功即把该地址固化进对应片源（重试/重进沿用）。
+  final List<String> fallbackUrls;
+
   /// 影片元信息：用于观影历史进度记录（空则不记录）。
   final String movieId;
   final String movieNumber;
@@ -45,6 +49,7 @@ class VideoPlayerScreen extends StatefulWidget {
     super.key,
     required this.streams,
     required this.title,
+    this.fallbackUrls = const [],
     this.movieId = '',
     this.movieNumber = '',
     this.cover = '',
@@ -56,6 +61,7 @@ class VideoPlayerScreen extends StatefulWidget {
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   late List<VideoStream> _streams;
+  late final List<String> _fallbacks = List.of(widget.fallbackUrls);
   int _current = 0;
   PlayerEngine? _controller;
   Duration? _seekPending;
@@ -215,15 +221,54 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     } catch (e) {
       AppLogger.error('Failed to initialize video', e);
       await old?.dispose();
-      final detail = await _diagnoseProxyFailure(stream.url);
+      await _handleInitFailure(stream, e);
+    }
+  }
+
+  /// 初始化失败：还有备用源则消费一条重试（备用地址固化进当前片源并提示），
+  /// 否则展示错误（本机 HLS 中继地址附自检信息）。备用源数量有界（后端单次
+  /// 探测上限 4 条），递归深度不会失控。
+  Future<void> _handleInitFailure(VideoStream failed, Object error) async {
+    String? next;
+    while (_fallbacks.isNotEmpty) {
+      final candidate = _fallbacks.removeAt(0);
+      if (candidate != failed.url) {
+        next = candidate;
+        break;
+      }
+    }
+    if (next == null) {
+      final detail = await _diagnoseProxyFailure(failed.url);
       if (mounted) {
         setState(() {
-          _error = detail == null ? e.toString() : '${e.toString()}\n$detail';
+          _error = detail == null
+              ? error.toString()
+              : '${error.toString()}\n$detail';
           _loading = false;
         });
       }
+      return;
     }
+    AppLogger.info('Switching to fallback stream');
+    _streams[_current] = _withUrl(failed, next);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('当前源不可用，已切换备用源')),
+    );
+    await _initController();
   }
+
+  /// 复制片源并替换播放地址（备用源与原片源同内容，仅 CDN 地址不同）。
+  VideoStream _withUrl(VideoStream s, String url) => VideoStream(
+        url: url,
+        referer: s.referer,
+        resolution: s.resolution,
+        qualityHeight: s.qualityHeight,
+        bandwidth: s.bandwidth,
+        source: s.source,
+        uncensored: s.uncensored,
+        cnsub: s.cnsub,
+      );
 
   /// 初始化失败时对播放地址做一次自检重取（仅本机 HLS 中继地址）：ExoPlayer
   /// 只给 "Source error"，无法区分上游取流失败与其它原因；把自检得到的 HTTP

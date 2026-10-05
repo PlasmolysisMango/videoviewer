@@ -901,12 +901,32 @@ class JavDBClient {
     return AacgArticleDetail.fromJson(await _getJson(uri));
   }
 
-  /// 播放前动态选源：候选列表逐个交给后端验活，返回第一个可用地址
-  /// （全部不可用返回空串；多个 url 参数按 Iterable 输出重复键）。
-  Future<String> aacgProbe(List<String> urls) async {
+  /// 播放前动态选源：候选列表一次性交给后端并行做两阶段验活（播放列表 +
+  /// key/首分片深度验证），返回播放列表级可用地址（深度通过者在前，首项即
+  /// 默认播放源，其余可作备用源）与深度验证通过的 playable 子集；全部不可用
+  /// 时均为空列表。多个 url 参数按 Iterable 输出重复键。旧后端无 playable
+  /// 字段时按播放列表级结果退化（playable = urls），只有单个 url 字段的
+  /// 更旧后端退化为单候选。
+  Future<AacgProbeResult> aacgProbe(List<String> urls) async {
     final uri = Uri.parse('$baseUrl/api/aacg/probe')
         .replace(queryParameters: {'url': urls});
     final data = await _getJson(uri);
-    return data['url'] as String? ?? '';
+    final list = (data['urls'] as List<dynamic>?)?.cast<String>();
+    final usable =
+        list?.where((u) => u.isNotEmpty).toList() ?? const <String>[];
+    if (data.containsKey('playable')) {
+      final playable = (data['playable'] as List<dynamic>?)
+              ?.cast<String>()
+              .where((u) => u.isNotEmpty)
+              .toList() ??
+          const <String>[];
+      return AacgProbeResult(urls: usable, playable: playable);
+    }
+    if (list != null) {
+      return AacgProbeResult(urls: usable, playable: usable);
+    }
+    final single = data['url'] as String? ?? '';
+    final legacy = single.isEmpty ? const <String>[] : <String>[single];
+    return AacgProbeResult(urls: legacy, playable: legacy);
   }
 }

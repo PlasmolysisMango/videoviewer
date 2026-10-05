@@ -327,6 +327,12 @@ func (c *Client) get(ctx context.Context, raw, referer string, budget *int) ([]b
 // accepts any content type, imposes no size limit and has no overall timeout,
 // so the caller owns Close, any limiting and status handling.
 func (c *Client) Fetch(ctx context.Context, raw string) (*http.Response, error) {
+	return c.FetchRange(ctx, raw, "")
+}
+
+// FetchRange 与 Fetch 相同，额外把客户端的 Range 头原样转发给上游
+// （ExoPlayer 对 EXT-X-BYTERANGE 分片与断点续传依赖 206/Content-Range）。
+func (c *Client) FetchRange(ctx context.Context, raw, rangeHdr string) (*http.Response, error) {
 	if err := c.validateURL(raw); err != nil {
 		return nil, err
 	}
@@ -338,6 +344,9 @@ func (c *Client) Fetch(ctx context.Context, raw string) (*http.Response, error) 
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("Accept", "*/*")
+	if rangeHdr != "" {
+		req.Header.Set("Range", rangeHdr)
+	}
 	resp, err := c.media.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("aacg fetch: %w", err)

@@ -72,6 +72,56 @@ func TestParseMediaSegmentsEncrypted(t *testing.T) {
 	}
 }
 
+func TestFirstMediaTargets(t *testing.T) {
+	const base = "https://x/y/media.m3u8"
+	cases := []struct {
+		name string
+		in   string
+		want MediaProbe
+	}{
+		{
+			name: "plain segment",
+			in:   "#EXTM3U\n#EXTINF:10.0,\nseg-0.ts\n#EXTINF:10.0,\nseg-1.ts\n",
+			want: MediaProbe{SegURI: "https://x/y/seg-0.ts"},
+		},
+		{
+			name: "key map byterange with offset",
+			in:   "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-BYTERANGE:100@10\n#EXTINF:10.0,\nseg-0.ts\n",
+			want: MediaProbe{
+				KeyURI:   "https://x/y/k.bin",
+				MapURI:   "https://x/y/init.mp4",
+				SegURI:   "https://x/y/seg-0.ts",
+				SegRange: "bytes=10-109",
+			},
+		},
+		{
+			name: "byterange without offset defaults to zero",
+			in:   "#EXTM3U\n#EXT-X-BYTERANGE:50\n#EXTINF:10.0,\nseg-0.ts\n",
+			want: MediaProbe{SegURI: "https://x/y/seg-0.ts", SegRange: "bytes=0-49"},
+		},
+		{
+			name: "method NONE clears earlier key",
+			in:   "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXT-X-KEY:METHOD=NONE\nseg-0.ts\n",
+			want: MediaProbe{SegURI: "https://x/y/seg-0.ts"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := FirstMediaTargets(tc.in, base)
+			if !ok {
+				t.Fatal("want targets, got none")
+			}
+			if got != tc.want {
+				t.Fatalf("targets = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+
+	if _, ok := FirstMediaTargets("#EXTM3U\n#EXT-X-ENDLIST\n", base); ok {
+		t.Fatal("segment-less playlist should return false")
+	}
+}
+
 // ---- DownloadStream：流式写盘与断点续传 ----
 
 const (
